@@ -4,8 +4,6 @@
 
 기준 모델: [AIMIA-EAI/RT-DETRv4](https://github.com/AIMIA-EAI/RT-DETRv4)
 
-현재는 **폴더 구조와 phase별 개발 계획을 정리한 단계**입니다. 과거의 `temp.py`는 참고 예시이며, phase 구현이나 완성된 실행 프로그램이 아닙니다. RT-DETRv4 학습·feature 추출·일반/스마트글래스 분류는 구현 예정입니다.
-
 ## 폴더 구조
 
 ```text

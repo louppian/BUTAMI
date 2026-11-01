@@ -1,0 +1,11 @@
+/butam/
+/data/
+/models/
+/outputs/
+__pycache__/
+*.pyc
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.mp4

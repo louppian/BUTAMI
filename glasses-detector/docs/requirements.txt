@@ -1,0 +1,6 @@
+sphinx
+sphinx-design
+sphinx-copybutton
+sphinxcontrib-bibtex
+pydata-sphinx-theme
+sphobjinv

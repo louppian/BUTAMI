@@ -1,0 +1,15 @@
+tqdm
+torch
+scipy
+pyyaml
+fvcore
+rarfile
+ipykernel
+pycocotools
+torchvision
+prettytable
+albumentations
+pytorch_lightning
+tensorboard
+torch-tb-profiler
+jsonargparse[signatures]

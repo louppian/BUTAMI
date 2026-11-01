@@ -2,6 +2,7 @@
 /butam/
 /.venv/
 /venv/
+/model/
 /models/
 /outputs/
 

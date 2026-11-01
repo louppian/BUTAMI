@@ -62,7 +62,7 @@ BUTAMI/
 - **정답 주석:** `data/annotations/`
 - **코드 / 결과:** `code/phase1a_images/` ↔ `results/phase1a_images/`
 
-### 1b. 스마트글래스 영상
+### 1b. 스마트글래스 / 일반 안경 영상
 
 - 스마트글래스 착용 영상 수집.
 - 비교용 일반 안경·미착용 영상 확보.

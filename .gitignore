@@ -13,6 +13,7 @@
 /results/**
 !/results/**/
 !/results/**/.gitkeep
+!/results/phase1a_images/results.md
 /ckpt/**
 !/ckpt/**/
 !/ckpt/**/.gitkeep

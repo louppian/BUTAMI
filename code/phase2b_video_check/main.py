@@ -6,7 +6,6 @@ Green boxes require both thresholds. Models can still make mistakes.
 Requires Python 3.12+, glasses-detector, opencv-python-headless and FFmpeg.
 YuNet weights are downloaded from the official OpenCV model zoo if missing.
 """
-import argparse
 import json
 import math
 from pathlib import Path
@@ -16,13 +15,34 @@ import tempfile
 import time
 import uuid
 import urllib.request
+import sys
+from types import SimpleNamespace
 
+
+# 설정은 여기서 직접 수정합니다. 실행 인자는 사용하지 않습니다.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+INPUT_VIDEO = PROJECT_ROOT / "data" / "videos" / "video1.mp4"
+OUTPUT_VIDEO = PROJECT_ROOT / "results" / "phase2b_video_check" / "video1_glasses_30fps.mp4"
+FACE_MODEL = PROJECT_ROOT / "ckpt" / "pretrained" / "face_detection_yunet_2023mar.onnx"
+DEVICE = "cuda"  # GPU가 없으면 "cpu"
+FPS = 30
+CLASSIFICATION_THRESHOLD = 0.5
+DETECTION_THRESHOLD = 0.3
+FACE_THRESHOLD = 0.7
+FACE_EXPAND = 1.8
+BATCH_SIZE = 8
+GLASSES_KIND = "anyglasses"
+MAX_SECONDS = None  # 먼저 10으로 설정해 미리보기; 전체 영상은 None
+
+# 이전 위치에 설치된 패키지 대신 이 저장소의 외부 소스를 사용합니다.
+THIRD_PARTY_SOURCE = PROJECT_ROOT / "third_party" / "glasses-detector" / "src"
+sys.path.insert(0, str(THIRD_PARTY_SOURCE))
 
 def ensure_face_model(path):
     if path.is_file() and path.stat().st_size > 10000:
         return
     if path.exists():
-        raise RuntimeError(f"Invalid face model file; use a different --face-model path: {path}")
+        raise RuntimeError(f"Invalid face model file; set FACE_MODEL to a different path: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + f".{uuid.uuid4().hex}.download")
     url = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
@@ -131,37 +151,30 @@ class FaceGlassesPipeline:
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--fps", type=float, default=30)
-    parser.add_argument("--threshold", type=float, default=0.5)
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--device", default=None, help="cuda, cpu; default: automatic")
-    parser.add_argument("--kind", choices=["anyglasses", "eyeglasses", "sunglasses"], default="anyglasses")
-    parser.add_argument("--det-threshold", type=float, default=0.3)
-    parser.add_argument("--face-threshold", type=float, default=0.7)
-    parser.add_argument("--face-expand", type=float, default=1.8)
-    parser.add_argument("--face-model", type=Path, default=Path("models/face_detection_yunet_2023mar.onnx"))
-    parser.add_argument("--max-seconds", type=float, default=None, help="Optional short preview")
-    args = parser.parse_args()
+    args = SimpleNamespace(
+        input=Path(INPUT_VIDEO), output=Path(OUTPUT_VIDEO), fps=FPS,
+        threshold=CLASSIFICATION_THRESHOLD, batch_size=BATCH_SIZE,
+        device=DEVICE, kind=GLASSES_KIND, det_threshold=DETECTION_THRESHOLD,
+        face_threshold=FACE_THRESHOLD, face_expand=FACE_EXPAND,
+        face_model=Path(FACE_MODEL), max_seconds=MAX_SECONDS,
+    )
     if not math.isfinite(args.fps) or args.fps <= 0 or args.batch_size < 1:
-        parser.error("FPS and batch size must be positive")
+        raise ValueError("FPS and batch size must be positive")
     if not 0 <= args.threshold <= 1:
-        parser.error("threshold must be between 0 and 1")
+        raise ValueError("threshold must be between 0 and 1")
     if not 0 <= args.det_threshold <= 1 or not 0 <= args.face_threshold <= 1:
-        parser.error("Detector thresholds must be between 0 and 1")
+        raise ValueError("Detector thresholds must be between 0 and 1")
     if not math.isfinite(args.face_expand) or args.face_expand <= 0:
-        parser.error("Face expansion must be positive")
+        raise ValueError("Face expansion must be positive")
     if args.max_seconds is not None and (not math.isfinite(args.max_seconds) or args.max_seconds <= 0):
-        parser.error("Preview duration must be positive")
+        raise ValueError("Preview duration must be positive")
     if not args.input.is_file():
-        parser.error(f"Input does not exist: {args.input}")
+        raise ValueError(f"Input does not exist: {args.input}")
     if args.output.exists() or args.output.resolve() == args.input.resolve():
-        parser.error("Output must be a new file, different from input")
+        raise ValueError("Output must be a new file, different from input")
     for executable in ["ffmpeg", "ffprobe"]:
         if not shutil.which(executable):
-            parser.error(f"{executable} is missing; install FFmpeg first")
+            raise ValueError(f"{executable} is missing; install FFmpeg first")
     encoders_text = subprocess.check_output(["ffmpeg", "-hide_banner", "-encoders"], stderr=subprocess.STDOUT, text=True)
     encoders = {parts[1] for line in encoders_text.splitlines() if len(parts := line.split()) >= 2}
     if "libx264" in encoders:
@@ -169,13 +182,15 @@ def main():
     elif "mpeg4" in encoders:
         encoding_options = ["-c:v", "mpeg4", "-q:v", "3"]
     else:
-        parser.error("FFmpeg has neither libx264 nor mpeg4 encoder")
+        raise ValueError("FFmpeg has neither libx264 nor mpeg4 encoder")
     print(f"Video encoder: {encoding_options[1]}", flush=True)
     ensure_face_model(args.face_model)
 
     import torch
     from PIL import Image, ImageDraw, ImageFont
     from glasses_detector import GlassesClassifier, GlassesDetector
+
+    torch.hub.set_dir(str(PROJECT_ROOT / "ckpt" / "pretrained" / "torch"))
 
     probe = json.loads(subprocess.check_output([
         "ffprobe", "-v", "error", "-select_streams", "v:0",

@@ -1,11 +1,35 @@
+# Local environments and legacy runtime folders
 /butam/
-/data/
+/.venv/
+/venv/
 /models/
 /outputs/
+
+# Keep agreed directory structure without committing runtime contents
+/data/**
+!/data/**/
+!/data/**/.gitkeep
+/results/**
+!/results/**/
+!/results/**/.gitkeep
+/ckpt/**
+!/ckpt/**/
+!/ckpt/**/.gitkeep
+
+# Python build/cache files
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+
+# Model weights and input/output video
 *.pt
 *.pth
 *.ckpt
 *.onnx
 *.mp4
+
+# Local secrets
+.env
+.env.*
+*.pem
+*.key

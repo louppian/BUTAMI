@@ -6,9 +6,9 @@
 
 ## 전체 흐름
 
-![BUTAMI 단계별 모델 연결도](phase_flow.png)
+![BUTAMI 후속 검출기·증류 학습 연결도](phase_flow.png)
 
-- **이미지 경로:** `1a → 2a → 3a` — 이미지 수집 → 안경 bbox 생성·검출기 학습·특징 추출 → 분류기 학습·증류.
+- **현재 이미지 경로:** `1a → 2a → 3a` — 사람 이미지 수집 → 얼굴·안경 bbox·확률·얼굴 선택 → CLIP 특징·3-class MLP 학습·평가.
 - **영상 경로:** `1b → 2b → 3b` — 영상 수집 → 얼굴·안경 검출·특징 추출 → 일반/스마트 분류 결과 표시.
 - **모델 전달:** `2a → 2b`는 학습한 검출기·특징 추출기를, `3a → 3b`는 학습한 MLP를 전달한다.
 
@@ -25,6 +25,7 @@ BUTAMI/
 │   │   └── extract_bbox.py
 │   ├── phase2b_video_check/
 │   ├── phase3a_train/
+│   │   └── train_mlp.py
 │   └── phase3b_video_check/
 ├── data/
 │   ├── images/
@@ -43,6 +44,12 @@ BUTAMI/
 │   │   └── results.md
 │   ├── phase2b_video_check/
 │   ├── phase3a_train/
+│   │   ├── results.md
+│   │   ├── metrics.json
+│   │   ├── predictions.csv
+│   │   ├── excluded_images.csv
+│   │   ├── confusion_matrix.png
+│   │   └── misclassified_001.png
 │   └── phase3b_video_check/
 ├── ckpt/
 │   ├── pretrained/
@@ -53,6 +60,7 @@ BUTAMI/
 │   │       └── classification_anyglasses_shufflenet_v2_x1_0.pth
 │   ├── phase2a_extract/
 │   └── phase3a_train/
+│       └── clip_mlp_3class.pt
 ├── third_party/
 │   ├── glasses-detector/
 │   ├── RT-DETRv4/
@@ -113,11 +121,11 @@ BUTAMI/
 
 현재 `code/phase2a_extract/extract_bbox.py`의 처리 범위:
 
-1. 세 종류 폴더의 JPEG를 읽고 **YuNet**으로 얼굴 bbox를 검출한다. 기본 임계값은 0.5이고 얼굴별 탐지 점수를 저장한다.
+1. 세 종류 폴더의 JPEG를 읽고 **YuNet**으로 얼굴 bbox를 검출한다. 기본 임계값은 0.5이고 얼굴별 탐지 점수를 저장한다. 점수 0.5 초과·면적 1% 이상인 후보가 하나일 때 주대상 얼굴 후보를 자동 선택한다. 여러 후보·작은 얼굴만 존재·미검출 이미지는 검수 대상으로 남긴다.
 2. 얼굴 주변을 1.8배 확장해 **anyglasses-medium 분류기**로 안경 착용 확률을 계산하고 **full-medium 분할기**로 안경 마스크를 계산한다. 동일한 공식 가중치를 torchvision 모델에 직접 로드해 Python 3.10 이상에서 실행한다.
 3. 안경 착용 확률 0.5 미만의 안경 bbox와 빈 마스크를 제외하고, 남은 안경 bbox를 원본 좌표로 복원해 저장한다.
-4. 모든 이미지를 **`data/annotations/face_glasses.json`**에 기록한다. 얼굴 미검출 이미지도 `images`에 포함한다.
-5. COCO `images / annotations / categories` 구조를 사용한다. 카테고리는 `1=face`, `2=glasses`, bbox는 원본 픽셀 기준 `[x, y, width, height]`다. 얼굴의 `score`는 YuNet 점수, `glasses_probability`는 안경 착용 확률이다. 안경의 `score`는 안경 착용 확률이며 `face_id`로 해당 얼굴 주석을 연결한다. 파일 경로는 `data/images/` 기준이다.
+4. 모든 이미지를 **`data/annotations/face_glasses.json`**에 기록한다. `images`의 `selected_face_id`와 `selection_status`로 얼굴 선택·검수 상태를 전달한다. 얼굴 미검출 이미지도 포함한다.
+5. COCO `images / annotations / categories` 구조를 사용한다. 카테고리는 `1=face`, `2=glasses`, bbox는 원본 픽셀 기준 `[x, y, width, height]`다. 얼굴의 `score`는 YuNet 점수, `glasses_probability`는 안경 착용 확률이다. 얼굴의 `glasses_status`는 `below_threshold`, `empty_mask`, `detected`다. 안경의 `score`는 안경 착용 확률이며 `face_id`로 해당 얼굴 주석을 연결한다. 파일 경로는 `data/images/` 기준이다.
 6. 최대 32개 얼굴 crop을 배치 처리하고 GPU에서는 bbox 네 좌표와 착용 확률만 배치당 한 번 CPU로 가져온다. crop·마스크는 메모리에서 사용한다.
 
 후속 2a 학습·특징 추출:
@@ -127,7 +135,9 @@ BUTAMI/
 - DINOv3의 대응 특징과 RT-DETRv4 특징을 정렬해 검출 학습에 특징 증류 손실을 결합한다.
 - HybridEncoder 특징맵과 안경 bbox에 ROI pooling을 적용해 고정 길이 특징 벡터를 추출한다.
 
-**3a 전달:** 후속 단계에서 생성한 원본 안경 crop, 종류 라벨, ROI 특징 벡터.
+**현재 3a 전달:** 선택된 얼굴 ID·bbox·점수·안경 확률·검출 상태가 포함된 COCO JSON.
+
+**후속 3a 전달:** 원본 안경 crop, 종류 라벨, ROI 특징 벡터.
 **2b 전달:** 학습한 RT-DETRv4 검출기와 동일한 ROI 특징 추출 구성.  
 **코드:** `code/phase2a_extract/extract_bbox.py`
 
@@ -148,9 +158,29 @@ BUTAMI/
 
 **코드 / 결과:** `code/phase2b_video_check/` ↔ `results/phase2b_video_check/`
 
-## Phase 3. 일반 안경 / 스마트글래스 분류
+## Phase 3. 미착용 / 일반 안경 / 스마트글래스 분류
 
-### 3a. 분류 teacher·student 학습과 증류
+### 3a. 3-class MLP 학습·평가
+
+**2a의 선택된 얼굴 → 얼굴 주변 crop → 고정 CLIP 특징 → 3-class MLP → 원래 예측·검출 상태 대조**
+
+현재 `code/phase3a_train/train_mlp.py`의 처리 범위:
+
+- `selected_face_id`가 지정되고 탐지 점수 0.5 초과인 얼굴 하나를 이미지별로 사용한다. 얼굴 선택 검수 대상은 제외 이유를 CSV로 기록한다.
+- 원본 폴더의 미착용·일반 안경·스마트글래스 라벨을 그대로 사용한다.
+- 얼굴 주변 1.8배 crop의 CLIP 특징을 한 번 추출하고 `feature_dim → 128 → 3` MLP를 학습한다.
+- 클래스별 이미지 단위 80:20 분리, seed 42, 100 epoch를 기본으로 사용한다.
+- MLP의 원래 세 클래스 softmax로 전체 테스트 정확도와 혼동행렬을 계산한다.
+- 안경 착용 확률과 MLP의 착용 여부가 충돌하면 원래 예측·확률을 보존하고 `final_class=review`를 기록한다. 높은 착용 확률에서 bbox가 누락된 경우도 별도 집계한다.
+- 오분류 그림에는 선택된 얼굴과 해당 안경 bbox·점수, 원래 MLP 예측·확률, 최종 상태를 함께 표시한다.
+
+**코드:** `code/phase3a_train/train_mlp.py`
+
+**결과:** `results/phase3a_train/`의 `metrics.json`, `predictions.csv`, `excluded_images.csv`, `confusion_matrix.png`, `misclassified_*.png`
+
+**체크포인트:** `ckpt/phase3a_train/clip_mlp_3class.pt`
+
+#### 후속 계획: 일반/스마트 teacher·student 학습과 증류
 
 **2a 원본 crop → CLIP + 분류 헤드 → teacher 예측 분포**  
 **2a ROI 특징 → MLP → student 예측**
@@ -190,7 +220,8 @@ BUTAMI/
 | RT-DETRv4-S | 2a → 2b | 이미지·프레임 → 안경 bbox·HybridEncoder 특징맵 |
 | ROI pooling | 2a → 3a / 2b → 3b | 특징맵 + bbox → 안경별 고정 길이 특징 |
 | YuNet | 2a / 2b | 사람 이미지·영상 프레임 → 얼굴 bbox·주변 영역 |
-| CLIP + 분류 헤드 | 3a | 원본 안경 crop → 일반/스마트 예측 분포 → MLP 증류 |
+| CLIP + MLP 3-class | 현재 3a | 선택된 얼굴 주변 crop → 세 클래스 확률·판정 충돌 기록 |
+| CLIP + 분류 헤드 | 후속 3a | 원본 안경 crop → 일반/스마트 예측 분포 → MLP 증류 |
 | MLP | 3a → 3b | ROI 특징 → 일반/스마트 점수·판정 |
 
 CLIP의 이미지 선별과 종류 분류는 각각 별도의 역할이다. DINOv3의 특징 증류는 2a 검출 학습에, CLIP teacher의 분류 증류는 3a 분류 학습에 연결한다.
@@ -201,7 +232,7 @@ CLIP의 이미지 선별과 종류 분류는 각각 별도의 역할이다. DINO
 | --- | --- |
 | `ckpt/pretrained/` | GlassesSegmenter·YuNet·CLIP·RT-DETRv4·DINOv3 사전학습 가중치 |
 | `ckpt/phase2a_extract/` | 학습한 안경 검출기와 특징 정렬 모듈 |
-| `ckpt/phase3a_train/` | CLIP 분류 teacher, MLP student, 클래스·특징 전처리·임계값 |
+| `ckpt/phase3a_train/` | 현재 `clip_mlp_3class.pt`, 후속 CLIP teacher·MLP student |
 
 YuNet은 `ckpt/pretrained/face_detection_yunet_2023mar.onnx`, 안경 분할 가중치는 `ckpt/pretrained/segmentation_full_lraspp_mobilenet_v3_large.pth`, CLIP 캐시는 `ckpt/pretrained/clip/`에 둔다. 안경 착용 분류기는 `ckpt/pretrained/torch/checkpoints/classification_anyglasses_shufflenet_v2_x1_0.pth`를 사용한다. 추출기는 없는 YuNet·안경 분류·분할 가중치를 공식 배포 URL에서 다운로드하고 로컬 파일을 재사용한다.
 
@@ -212,9 +243,10 @@ Python 3.12 환경에서 수집 코드에 필요한 `ddgs`, `requests`, `Pillow`
 1. IDE에서 `code/phase1a_images/image_crawl.py` 실행 → 사람 이미지·CSV 저장.
 2. 이미지 종류·착용 상태 검수.
 3. IDE에서 `code/phase2a_extract/extract_bbox.py` 실행 → 얼굴 점수·안경 착용 확률을 포함한 COCO JSON 저장. 기존 JSON도 다시 추출해 갱신한다.
-4. bbox 검수 후 후속 학습에 사용.
+4. 원본 라벨과 주대상 얼굴을 검수한다. 검수한 얼굴은 `selected_face_id`에 지정하고, 검수 대기 이미지는 `null`을 유지한다.
+5. IDE에서 `code/phase3a_train/train_mlp.py` 실행 → 3-class MLP·원래 예측 성능·오분류 박스 그림·충돌 및 누락 기록 저장.
 
-`tests/test_image_pipeline.py`는 외부 검색·모델을 대체해 세 클래스 수집·중복 제거·이어받기, bbox 원본 좌표 복원, 빈 마스크, 여러 얼굴, COCO 저장을 검사한다. 저장소 루트에서 `python -m unittest discover -s tests -v`로 실행한다. 실제 수집 수량과 모델 추론 품질은 실행 환경에서 확인한다.
+`tests/test_image_pipeline.py`는 외부 검색·모델을 대체해 세 클래스 수집·중복 제거·이어받기, bbox 원본 좌표 복원, 빈 마스크, 여러 얼굴, 주대상 얼굴 선택·검수, COCO 저장, 학습 라벨·원래 예측 보존, 충돌 기록, 오분류 박스 표시를 검사한다. 저장소 루트에서 `python -m unittest discover -s tests -v`로 실행한다. 실제 수집 수량과 모델 추론 품질은 실행 환경에서 확인한다.
 
 ## 원본 출처
 

@@ -13,20 +13,22 @@ Python 3.10 이상에서 `opencv-python-headless`, `numpy`, `Pillow`, `torch`, `
 
 1. 이미지의 EXIF 방향을 반영하고 RGB로 읽는다. 수집기가 저장한 JPEG는 방향이 이미 반영되어 있다.
 2. YuNet으로 얼굴 bbox를 찾는다. 얼굴 검출 입력은 긴 변 최대 640px로 축소하고, 결과는 실제 가로·세로 축척으로 원본 이미지 좌표에 복원한다. 기본 얼굴 점수 임계값은 0.5이며 YuNet 점수를 함께 보존한다.
-3. 얼굴 bbox 주변을 가로·세로 1.8배 확장해 이미지 경계 안에서 자른다. 이 crop은 안경 착용 분류기와 분할기의 입력으로 메모리에서 사용한다.
-4. `anyglasses/medium` ShuffleNet으로 얼굴별 안경 착용 확률을 계산하고, `full/medium` LR-ASPP로 안경테·안경다리·렌즈를 분할한다. 입력은 256×256이며 최대 32개 얼굴 crop을 배치 처리한다.
-5. 안경 착용 확률이 0.5 미만이면 해당 얼굴의 안경 bbox를 제외한다. 0.5 이상이면 양수 logit 마스크의 외접 bbox를 구하고 빈 마스크는 제외한다. GPU에서는 bbox 네 좌표와 착용 확률만 배치당 한 번 CPU로 가져온다.
-6. 안경 bbox를 얼굴 주변 crop에서 원본 이미지 좌표로 변환한다. 얼굴·안경 좌표는 이미지 경계에 맞춰 자르고 COCO `[x, y, width, height]`로 기록한다.
-7. 전체 이미지를 처리한 후 임시 JSON을 최종 파일로 교체한다. 처리 중 실패하면 이전 최종 JSON은 유지된다.
+3. 탐지 점수가 0.5 초과이고 얼굴 면적이 이미지 면적의 1% 이상인 후보가 하나이면 주대상 얼굴 후보로 자동 선택한다. 여러 후보·작은 얼굴만 존재·미검출 이미지는 검수 대상으로 남긴다. 모든 탐지 얼굴은 주석에 보존한다. 기준은 `FACE_THRESHOLD`, `MIN_FACE_AREA`에서 수정한다.
+4. 각 얼굴 bbox 주변을 가로·세로 1.8배 확장해 이미지 경계 안에서 자른다. 이 crop은 안경 착용 분류기와 분할기의 입력으로 메모리에서 사용한다.
+5. `anyglasses/medium` ShuffleNet으로 얼굴별 안경 착용 확률을 계산하고, `full/medium` LR-ASPP로 안경테·안경다리·렌즈를 분할한다. 입력은 256×256이며 최대 32개 얼굴 crop을 배치 처리한다.
+6. 안경 착용 확률이 0.5 미만이면 해당 얼굴의 안경 bbox를 제외한다. 0.5 이상이면 양수 logit 마스크의 외접 bbox를 구하고 빈 마스크는 제외한다. GPU에서는 bbox 네 좌표와 착용 확률만 배치당 한 번 CPU로 가져온다.
+7. 안경 bbox를 얼굴 주변 crop에서 원본 이미지 좌표로 변환한다. 얼굴·안경 좌표는 이미지 경계에 맞춰 자르고 COCO `[x, y, width, height]`로 기록한다.
+8. 전체 이미지를 처리한 후 임시 JSON을 최종 파일로 교체한다. 처리 중 실패하면 이전 최종 JSON은 유지된다.
 
 이미지마다 검출된 모든 얼굴과 각 얼굴 주변의 안경 bbox를 기록한다. 얼굴을 검출하지 못한 이미지도 `images`에 포함한다. 클래스 이름에 관계없이 같은 검출·분할 모델을 적용한다. 빈 마스크와 얼굴 검출 실패는 모델의 검출 결과이며 실제 안경 미착용 정답과는 검수로 구분한다.
 
 ## COCO JSON
 
-- `images`: `id`, `file_name`, `width`, `height`. `file_name`은 `data/images/` 기준 상대 경로다. 세 종류의 수집 클래스는 이 경로에 유지된다.
+- `images`: `id`, `file_name`, `width`, `height`, `selected_face_id`, `selection_status`. `file_name`은 `data/images/` 기준 상대 경로다. 세 종류의 수집 클래스는 이 경로에 유지된다.
+- `selected_face_id`는 선택된 얼굴 주석 ID이며 검수가 필요한 경우 `null`이다. `selection_status`는 `selected`, `no_face`, `no_eligible_face`, `multiple_faces`로 원인을 기록한다.
 - `categories`: `id=1, name=face`, `id=2, name=glasses`.
 - `annotations`: `id`, `image_id`, `category_id`, `bbox`, `area`, `iscrowd=0`, `score`.
-- 얼굴 주석의 `score`는 YuNet 탐지 점수이고 `glasses_probability`는 해당 얼굴의 안경 착용 확률이다. 미착용으로 판정한 얼굴에도 두 값을 기록한다.
+- 얼굴 주석의 `score`는 YuNet 탐지 점수이고 `glasses_probability`는 해당 얼굴의 안경 착용 확률이다. 모든 탐지 얼굴에 두 값을 기록한다. `glasses_status`는 `below_threshold`, `empty_mask`, `detected`로 bbox 제외·생성 이유를 기록한다.
 - 안경 주석의 `score`는 해당 얼굴의 안경 착용 확률이다. `face_id`로 같은 이미지의 얼굴 주석 ID를 참조한다. 이 점수는 bbox 위치의 정확도를 평가하는 값과 구분해 사용한다.
 - `bbox`: 원본 이미지 픽셀 단위 `[x, y, width, height]`. `area`는 bbox 면적이다.
 - 안경 bbox가 있으면 얼굴 주석과 별도의 안경 주석을 같은 `image_id`로 추가한다.
@@ -38,7 +40,13 @@ Python 3.10 이상에서 `opencv-python-headless`, `numpy`, `Pillow`, `torch`, `
 
 얼굴 검출은 OpenCV CPU를 사용하고 안경 착용 분류·분할은 CUDA가 있으면 GPU 혼합 정밀도를 사용한다. CPU에서도 동일한 bbox 생성 절차를 사용할 수 있다.
 
-기존 JSON에 점수가 없으면 갱신한 추출 코드를 다시 실행해 `score`, `glasses_probability`, `face_id`를 포함한 JSON을 생성한다.
+기존 JSON은 갱신한 추출 코드를 다시 실행해 `selected_face_id`, `selection_status`, `glasses_status`까지 포함하도록 생성한다.
+
+## 3a 전달과 검수
+
+자동 선택된 얼굴도 원본 이미지의 라벨 대상과 일치하는지 검수한다. 특히 광고·합성·가림 장면에서는 인물 확인이 필요하다. 검수 후 주대상 얼굴을 정하려면 해당 이미지의 `selected_face_id`를 같은 이미지의 얼굴 주석 ID로 지정하고 `selection_status`를 `reviewed`로 기록한다. 검수 대기 이미지는 `selected_face_id=null`을 유지한다.
+
+`code/phase3a_train/train_mlp.py`는 이 JSON의 선택된 얼굴만 사용한다. 안경 bbox 누락과 낮은 착용 확률은 검출 모델의 결과로 기록하며 원본 수집 라벨을 유지한다.
 
 ## 후속 작업
 

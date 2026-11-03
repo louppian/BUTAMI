@@ -16,6 +16,7 @@ FACE_THRESHOLD = 0.5
 GLASSES_THRESHOLD = 0.5
 FACE_EXPAND = 1.8
 FACE_MAX_SIZE = 640
+MIN_FACE_AREA = 0.01
 YUNET_URL = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 CLASSIFIER_URL = "https://github.com/mantasu/glasses-detector/releases/download/v1.0.0/classification_anyglasses_shufflenet_v2_x1_0.pth"
 GLASSES_URL = "https://github.com/mantasu/glasses-detector/releases/download/v1.0.0/segmentation_full_lraspp_mobilenet_v3_large.pth"
@@ -77,6 +78,18 @@ def detect_faces(detector, image):
         if box is not None:
             boxes.append((box, score))
     return boxes
+
+
+def select_face(faces, width, height):
+    """이미지 면적 1% 이상의 단일 얼굴을 자동 선택하고 나머지는 검수한다."""
+    if not faces:
+        return None, "no_face"
+    candidates = [face for face in faces if face["score"] > FACE_THRESHOLD and face["area"] >= width * height * MIN_FACE_AREA]
+    if not candidates:
+        return None, "no_eligible_face"
+    if len(candidates) > 1:
+        return None, "multiple_faces"
+    return candidates[0]["id"], "selected"
 
 
 class GlassesExtractor:
@@ -155,8 +168,10 @@ def extract(root, detector, segmenter):
                 raise ValueError("안경 착용 확률을 확인하세요.")
             face["glasses_probability"] = probability
             if probability < GLASSES_THRESHOLD:
+                face["glasses_status"] = "below_threshold"
                 continue
             box = project_box(result[:4], crop)
+            face["glasses_status"] = "detected" if box is not None else "empty_mask"
             if box is not None:
                 annotate(image_id, 2, box, probability, face["id"])
         pending.clear()
@@ -165,14 +180,18 @@ def extract(root, detector, segmenter):
         with Image.open(path) as original:
             image = ImageOps.exif_transpose(original).convert("RGB")
         width, height = image.size
-        data["images"].append({"id": image_id, "file_name": path.relative_to(root / "data/images").as_posix(), "width": width, "height": height})
+        record = {"id": image_id, "file_name": path.relative_to(root / "data/images").as_posix(), "width": width, "height": height}
+        data["images"].append(record)
+        faces = []
         for box, score in detect_faces(detector, image):
             face = annotate(image_id, 1, box, score)
+            faces.append(face)
             crop = expand_box(box, width, height)
             x, y, w, h = crop
             pending.append((image_id, face, crop, image.crop((x, y, x + w, y + h))))
             if len(pending) == BATCH_SIZE:
                 flush()
+        record["selected_face_id"], record["selection_status"] = select_face(faces, width, height)
         if image_id % 100 == 0:
             print(f"bbox 추출: {image_id}/{len(paths)}")
     if pending:

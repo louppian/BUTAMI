@@ -41,6 +41,7 @@ with patch.dict("sys.modules", {
 }):
     crawl = load("crawl", "code/phase1a_images/image_crawl.py")
 bbox = load("bbox", "code/phase2a_extract/extract_bbox.py")
+train = load("train", "code/phase3a_train/train_mlp.py")
 
 
 class CollectionTests(unittest.TestCase):
@@ -162,6 +163,11 @@ class BboxTests(unittest.TestCase):
             self.assertEqual(saved, data)
             self.assertEqual([len(call.args[0]) for call in segmenter.call_args_list], [2, 1])
             self.assertEqual(len(data["images"]), 3)
+            self.assertIsNotNone(data["images"][0]["selected_face_id"])
+            self.assertEqual(data["images"][0]["selection_status"], "selected")
+            self.assertIsNone(data["images"][1]["selected_face_id"])
+            self.assertEqual(data["images"][1]["selection_status"], "multiple_faces")
+            self.assertEqual(data["images"][2]["selection_status"], "no_face")
             self.assertEqual(sum(a["category_id"] == 1 for a in data["annotations"]), 3)
             self.assertEqual(sum(a["category_id"] == 2 for a in data["annotations"]), 2)
             self.assertFalse(any(a["image_id"] == 1 and a["category_id"] == 2 for a in data["annotations"]))
@@ -221,6 +227,23 @@ class BboxTests(unittest.TestCase):
             self.assertEqual(glasses[0]["score"], 0.95)
             self.assertGreater(glasses[0]["bbox"][0], 40)
 
+    def test_extraction_and_training_keep_empty_mask_separate_from_absence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_images(root)
+            segmenter = Mock(return_value=[[256, 256, 0, 0, 0.99], [0, 0, 256, 256, 0.01], [0, 0, 256, 256, 0.99]])
+            with patch.object(bbox, "detect_faces", return_value=[([1, 1, 20, 20], 0.9)]), redirect_stdout(io.StringIO()):
+                data = bbox.extract(root, Mock(), segmenter)
+            samples, excluded = train.build_samples(data)
+            self.assertEqual(excluded, [])
+            self.assertEqual([s["glasses_status"] for s in samples], ["empty_mask", "below_threshold", "detected"])
+            metrics, records = train.evaluate_predictions(samples, [0, 1, 2], [[0.8, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]])
+            self.assertEqual(metrics["test_accuracy"], 1.0)
+            self.assertEqual(records[0]["prediction"], "no_glasses")
+            self.assertEqual(records[0]["final_class"], "review")
+            self.assertEqual(records[0]["reason"], "presence_conflict|glasses_bbox_missing")
+            self.assertFalse(samples[0]["glasses_bbox_present"])
+
     def test_failure_preserves_existing_json(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -250,6 +273,118 @@ class BboxTests(unittest.TestCase):
                 bbox.ensure_weights(path, "https://example.test/model")
             self.assertFalse(path.exists())
             self.assertFalse(path.with_suffix(".onnx.part").exists())
+
+
+
+class FaceSelectionTests(unittest.TestCase):
+    def test_single_large_face_is_selected_over_tiny_high_score_face(self):
+        faces = [{"id": 1, "score": 0.99, "area": 50}, {"id": 2, "score": 0.8, "area": 1000}]
+        self.assertEqual(bbox.select_face(faces, 100, 100), (2, "selected"))
+
+    def test_multiple_faces_are_kept_for_review(self):
+        faces = [{"id": 1, "score": 0.99, "area": 1000}, {"id": 2, "score": 0.8, "area": 2000}]
+        self.assertEqual(bbox.select_face(faces, 100, 100), (None, "multiple_faces"))
+
+    def test_no_face_and_tiny_face_are_review_cases(self):
+        self.assertEqual(bbox.select_face([], 100, 100), (None, "no_face"))
+        self.assertEqual(bbox.select_face([{"id": 1, "score": 0.99, "area": 50}], 100, 100), (None, "no_eligible_face"))
+
+
+class TrainingTests(unittest.TestCase):
+    def data(self):
+        images, annotations = [], []
+        for i, label in enumerate(train.CLASSES, 1):
+            images.append({"id": i, "file_name": f"{label}/sample.jpg", "width": 100, "height": 80,
+                           "selected_face_id": i + 10, "selection_status": "selected"})
+            annotations.append({"id": i + 10, "image_id": i, "category_id": 1, "bbox": [10, 10, 30, 30],
+                                "score": 0.9, "glasses_probability": [0.1, 0.99, 0.9][i - 1],
+                                "glasses_status": ["below_threshold", "detected", "empty_mask"][i - 1]})
+        annotations.append({"id": 21, "image_id": 2, "category_id": 2, "face_id": 12,
+                            "bbox": [10, 12, 30, 8], "score": 0.99})
+        return {"images": images, "annotations": annotations}
+
+    def test_training_labels_are_preserved_despite_presence_model_disagreement(self):
+        data = self.data()
+        data["annotations"][1]["glasses_probability"] = 0.01
+        data["annotations"][1]["glasses_status"] = "below_threshold"
+        data["annotations"].pop()
+        samples, excluded = train.build_samples(data)
+        self.assertEqual([s["label"] for s in samples], [0, 1, 2])
+        self.assertEqual(excluded, [])
+        self.assertFalse(samples[1]["glasses_bbox_present"])
+
+    def test_missing_face_selection_is_reported(self):
+        data = self.data()
+        data["images"][2]["selected_face_id"] = None
+        data["images"][2]["selection_status"] = "multiple_faces"
+        samples, excluded = train.build_samples(data)
+        self.assertEqual(len(samples), 2)
+        self.assertEqual(excluded, [{"image_id": 3, "file_name": "smart_glasses/sample.jpg", "reason": "multiple_faces"}])
+
+    def test_old_schema_and_wrong_image_face_are_rejected(self):
+        data = self.data()
+        del data["images"][0]["selected_face_id"]
+        with self.assertRaises(ValueError):
+            train.build_samples(data)
+        data = self.data()
+        data["images"][0]["selected_face_id"] = 12
+        with self.assertRaises(ValueError):
+            train.build_samples(data)
+
+    def test_face_score_filter_is_strictly_greater_than_half(self):
+        data = self.data()
+        data["annotations"][0]["score"] = 0.5
+        samples, excluded = train.build_samples(data)
+        self.assertEqual([s["label"] for s in samples], [1, 2])
+        self.assertEqual(excluded[0]["reason"], "face_score")
+
+    def test_raw_predictions_and_probabilities_survive_conflicts(self):
+        samples, _ = train.build_samples(self.data())
+        probabilities = [[0.1, 0.8, 0.1], [0.7, 0.2, 0.1], [0.1, 0.1, 0.8]]
+        metrics, records = train.evaluate_predictions(samples, [0, 1, 2], probabilities)
+        self.assertEqual([r["prediction"] for r in records], ["regular_glasses", "no_glasses", "smart_glasses"])
+        self.assertEqual([r["final_class"] for r in records], ["review", "review", "smart_glasses"])
+        self.assertEqual(metrics["confusion_matrix"], [[0, 1, 0], [1, 0, 0], [0, 0, 1]])
+        self.assertAlmostEqual(metrics["test_accuracy"], 1 / 3)
+        self.assertEqual(metrics["presence_conflicts"], 2)
+        self.assertEqual(metrics["missing_glasses_bbox"], 1)
+        self.assertEqual(metrics["review_count"], 2)
+        self.assertEqual(records[1]["glasses_probability"], 0.99)
+        self.assertEqual(records[1]["p_no_glasses"], 0.7)
+        self.assertEqual(records[2]["reason"], "glasses_bbox_missing")
+        for original, row in zip(probabilities, records):
+            self.assertEqual(original, [row["p_no_glasses"], row["p_regular_glasses"], row["p_smart_glasses"]])
+
+    def test_split_is_reproducible_disjoint_and_contains_every_class(self):
+        samples = [{"label": label} for label in range(3) for _ in range(5)]
+        train_ids, test_ids = train.stratified_split(samples)
+        self.assertEqual((train_ids, test_ids), train.stratified_split(samples))
+        self.assertFalse(set(train_ids) & set(test_ids))
+        self.assertEqual(set(train_ids) | set(test_ids), set(range(15)))
+        self.assertEqual({samples[i]["label"] for i in train_ids}, {0, 1, 2})
+        self.assertEqual({samples[i]["label"] for i in test_ids}, {0, 1, 2})
+
+    def test_error_plot_contains_face_and_its_glasses_boxes(self):
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        data = self.data()
+        samples, _ = train.build_samples(data)
+        _, records = train.evaluate_predictions(samples, [1], [[0.7, 0.2, 0.1]])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = root / "data/images/regular_glasses/sample.jpg"
+            image.parent.mkdir(parents=True)
+            Image.new("RGB", (100, 80)).save(image)
+            fig, ax = plt.subplots()
+            train.draw_error(ax, root, records[0], {a["id"]: a for a in data["annotations"]}, {12: [data["annotations"][-1]]})
+            self.assertEqual(len(ax.patches), 2)
+            self.assertEqual(ax.patches[0].get_bbox().bounds, (10, 10, 30, 30))
+            self.assertEqual(ax.patches[1].get_bbox().bounds, (10, 12, 30, 8))
+            self.assertIn("regular_glasses → no_glasses", ax.get_title())
+            self.assertTrue(any("P(glasses)=0.990" in text.get_text() for text in ax.texts))
+            plt.close(fig)
 
 
 if __name__ == "__main__":

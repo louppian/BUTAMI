@@ -42,6 +42,7 @@ with patch.dict("sys.modules", {
     crawl = load("crawl", "code/phase1a_images/image_crawl.py")
 bbox = load("bbox", "code/phase2a_extract/extract_bbox.py")
 train = load("train", "code/phase3a_train/train_mlp.py")
+recollect = load("recollect", "code/phase1a_images/recollect_images.py")
 
 
 class CollectionTests(unittest.TestCase):
@@ -385,6 +386,58 @@ class TrainingTests(unittest.TestCase):
             self.assertIn("regular_glasses → no_glasses", ax.get_title())
             self.assertTrue(any("P(glasses)=0.990" in text.get_text() for text in ax.texts))
             plt.close(fig)
+
+
+
+class RecollectionTests(unittest.TestCase):
+    def test_collection_is_archived_with_annotations_and_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            files = {f"data/images/{label}/sample.jpg": f"old-{label}".encode() for label in recollect.CLASSES}
+            files.update({"results/phase1a_images/metadata.csv": b"old metadata", "data/annotations/face_glasses.json": b'{"old": true}'})
+            for name, content in files.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+            placeholder = root / "data/images/no_glasses/.gitkeep"
+            placeholder.write_text("\n")
+            docs = root / "results/phase1a_images/results.md"
+            docs.write_text("keep documentation")
+            weights = root / "ckpt/pretrained/model.pth"
+            weights.parent.mkdir(parents=True)
+            weights.write_bytes(b"keep weights")
+            with redirect_stdout(io.StringIO()):
+                backup = recollect.archive_collection(root)
+            for name, content in files.items():
+                self.assertFalse((root / name).exists())
+                self.assertEqual((backup / name).read_bytes(), content)
+            self.assertEqual(docs.read_text(), "keep documentation")
+            self.assertEqual(weights.read_bytes(), b"keep weights")
+            self.assertEqual(placeholder.read_text(), "\n")
+            self.assertFalse((backup / "data/images/no_glasses/.gitkeep").exists())
+
+    def test_empty_collection_has_no_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertIsNone(recollect.archive_collection(root))
+            self.assertFalse((root / "data/archive").exists())
+
+    def test_new_collection_starts_after_old_annotation_is_archived(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            annotation = root / "data/annotations/face_glasses.json"
+            annotation.parent.mkdir(parents=True)
+            annotation.write_text('{"old": true}')
+            called = []
+
+            def collect():
+                self.assertFalse(annotation.exists())
+                self.assertEqual(len(list((root / "data/archive").iterdir())), 1)
+                called.append(True)
+
+            with patch.object(recollect, "ROOT", root), patch.dict("sys.modules", {"image_crawl": types.SimpleNamespace(main=collect)}), redirect_stdout(io.StringIO()):
+                recollect.main()
+            self.assertEqual(called, [True])
 
 
 if __name__ == "__main__":

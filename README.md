@@ -19,6 +19,7 @@ BUTAMI/
 ├── code/
 │   ├── phase1a_images/
 │   │   ├── image_crawl.py
+│   │   ├── recollect_images.py
 │   │   └── crawl_temp.ipynb
 │   ├── phase1b_videos/
 │   ├── phase2a_extract/
@@ -32,6 +33,7 @@ BUTAMI/
 │   │   ├── no_glasses/
 │   │   ├── regular_glasses/
 │   │   └── smart_glasses/
+│   ├── archive/
 │   ├── videos/
 │   └── annotations/
 │       └── face_glasses.json
@@ -87,7 +89,7 @@ BUTAMI/
 **검색 이미지 → CLIP 사람 이미지 선별 → 클래스별 500장 저장·검수 → 2a**
 
 - `no_glasses`, `regular_glasses`, `smart_glasses` 세 종류의 사람 이미지를 각 500장, 총 1,500장 목표로 수집한다.
-- CLIP으로 요청한 종류의 사람 이미지를 선별한다. 제품 단독 사진·여러 사람·콜라주·광고·부분 사진도 설명 후보로 비교한다.
+- CLIP으로 얼굴이 보이는 실제 인물 사진을 선별한다. 제품 단독 사진·여러 사람·콜라주·광고·부분 사진·그림·CG 인물·얼굴 지움 편집·착용자 없는 1인칭 장면도 설명 후보로 비교한다.
 - 동일·유사 중복을 제거하고 출처·검색어·클래스·CLIP 점수를 기록한다.
 - 한국어 검색어를 먼저 탐색한 뒤 영어 검색어를 탐색한다. 검색어는 미착용 24개·일반 안경 착용 28개·스마트글래스 착용 40개, 총 92개다.
 - 스마트글래스는 한국어·영어 제품명과 착용샷·착용 후기 검색어를 함께 사용하고, 실제 종류는 출처·제품 정보로 검수한다.
@@ -95,7 +97,10 @@ BUTAMI/
 - 사람 이미지 수집 기록에는 `collection=people`을 저장한다. 기존 제품 이미지·CSV는 별도로 보관한 뒤 실행한다.
 - 같은 인물·제품의 학습·검증·시험 분할은 검수 과정에서 관리한다.
 
-**코드:** `code/phase1a_images/image_crawl.py`  
+**새 수집:** `code/phase1a_images/recollect_images.py` — 기존 이미지·수집 CSV·bbox JSON을 `data/archive/people_<실행시각>/`에 백업한 뒤 처음부터 수집.
+
+**이어받기:** `code/phase1a_images/image_crawl.py`
+
 **미리보기:** `code/phase1a_images/crawl_temp.ipynb` — 같은 검색어·CLIP 필터로 클래스별 최대 5장 표시
 
 **원본:** `data/images/no_glasses/`, `data/images/regular_glasses/`, `data/images/smart_glasses/`
@@ -240,7 +245,7 @@ YuNet은 `ckpt/pretrained/face_detection_yunet_2023mar.onnx`, 안경 분할 가�
 
 Python 3.12 환경에서 수집 코드에 필요한 `ddgs`, `requests`, `Pillow`, `torch`, `transformers`, `ImageHash`를 준비한다. 추출은 Python 3.10 이상에서 `opencv-python-headless`, `numpy`, `Pillow`, `torch`, `torchvision`으로 실행한다.
 
-1. IDE에서 `code/phase1a_images/image_crawl.py` 실행 → 사람 이미지·CSV 저장.
+1. IDE에서 `code/phase1a_images/recollect_images.py` 실행 → 기존 이미지·CSV·bbox JSON 백업 → 새 사람 이미지·CSV 수집. 중단 후 이어받기는 `image_crawl.py`를 실행한다.
 2. 이미지 종류·착용 상태 검수.
 3. IDE에서 `code/phase2a_extract/extract_bbox.py` 실행 → 얼굴 점수·안경 착용 확률을 포함한 COCO JSON 저장. 기존 JSON도 다시 추출해 갱신한다.
 4. 원본 라벨과 주대상 얼굴을 검수한다. 검수한 얼굴은 `selected_face_id`에 지정하고, 검수 대기 이미지는 `null`을 유지한다.

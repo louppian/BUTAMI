@@ -75,15 +75,19 @@ QUERIES = {
 }
 # 앞의 세 문장 순서는 CLASSES와 같다. 나머지는 수집 제외 후보다.
 DESCRIPTIONS = [
-    "A photo of one person without any glasses on their face.",
-    "A photo of one person wearing ordinary prescription eyeglasses.",
-    "A photo of one person wearing electronic smart glasses.",
+    "A real photograph of one person with a visible face and no glasses.",
+    "A real photograph of one person visibly wearing ordinary prescription eyeglasses.",
+    "A real photograph of one person visibly wearing electronic smart glasses.",
     "A product photo of glasses alone, without a person wearing them.",
     "A photo of multiple people together.",
     "A collage with multiple pictures in separate panels.",
-    "An advertisement with text, diagrams, and multiple product views.",
+    "An advertisement or promotional thumbnail with large text, product graphics, or multiple views.",
     "A close-up of glasses or accessories without a visible face.",
     "A photo of an unrelated object without a person.",
+    "An illustration, cartoon, drawing, or avatar of a person.",
+    "A computer generated or 3D rendered person wearing futuristic glasses.",
+    "An edited portrait with the eyes or facial features removed.",
+    "A first-person view through glasses with no visible wearer.",
 ]
 FIELDS = ["path", "label", "query", "image_url", "source_url", "title", "phash", "filter_score", "collection"]
 local = threading.local()
@@ -192,7 +196,7 @@ def main():
                     if per_query[query] >= quota:
                         continue
                     try:
-                        results = search.images(query + " -collage -collection", max_results=100, page=page)
+                        results = search.images(query + " -collage -collection -illustration -cartoon -render -avatar -일러스트 -캐릭터 -합성", max_results=100, page=page)
                     except Exception as error:
                         print(f"검색 실패: {query} / page={page}: {error}")
                         continue

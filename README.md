@@ -1,6 +1,6 @@
 # BUTAMI
 
-일반 안경과 스마트글래스의 이미지·영상을 수집하고, 안경 영역의 특징을 추출해 두 종류를 분류하는 프로젝트.
+일반 안경 착용·미착용·스마트글래스 착용 사람 이미지와 영상을 수집하고 얼굴·안경 bbox를 생성한다. 안경 영역의 특징으로 일반 안경과 스마트글래스를 분류하는 프로젝트.
 
 기준 검출 모델: [AIMIA-EAI/RT-DETRv4](https://github.com/AIMIA-EAI/RT-DETRv4)
 
@@ -18,24 +18,37 @@
 BUTAMI/
 ├── code/
 │   ├── phase1a_images/
+│   │   ├── image_crawl.py
+│   │   └── crawl_temp.ipynb
 │   ├── phase1b_videos/
 │   ├── phase2a_extract/
+│   │   └── extract_bbox.py
 │   ├── phase2b_video_check/
 │   ├── phase3a_train/
 │   └── phase3b_video_check/
 ├── data/
 │   ├── images/
+│   │   ├── no_glasses/
+│   │   ├── regular_glasses/
+│   │   └── smart_glasses/
 │   ├── videos/
 │   └── annotations/
+│       └── face_glasses.json
 ├── results/
 │   ├── phase1a_images/
+│   │   ├── metadata.csv
+│   │   └── results.md
 │   ├── phase1b_videos/
 │   ├── phase2a_extract/
+│   │   └── results.md
 │   ├── phase2b_video_check/
 │   ├── phase3a_train/
 │   └── phase3b_video_check/
 ├── ckpt/
 │   ├── pretrained/
+│   │   ├── clip/
+│   │   ├── face_detection_yunet_2023mar.onnx
+│   │   └── segmentation_full_lraspp_mobilenet_v3_large.pth
 │   ├── phase2a_extract/
 │   └── phase3a_train/
 ├── third_party/
@@ -59,19 +72,22 @@ BUTAMI/
 
 ## Phase 1. 데이터 수집
 
-### 1a. 일반 안경 / 스마트글래스 이미지
+### 1a. 안경 미착용 / 일반 안경 착용 / 스마트글래스 착용 이미지
 
-**검색 이미지 → CLIP 수집 필터 → 이미지 저장·라벨 검수 → 2a**
+**검색 이미지 → CLIP 사람 이미지 선별 → 클래스별 500장 저장·검수 → 2a**
 
-- 일반 안경과 스마트글래스의 제품별 이미지를 수집한다.
-- CLIP으로 복수 안경·합성·광고·부분 확대 이미지를 선별한다.
-- 동일·유사 중복을 제거하고 출처·검색어·제품 정보를 기록한다.
-- 제조사·제품 정보를 확인해 `0=일반 안경`, `1=스마트글래스` 라벨을 검수한다.
-- 같은 제품의 사진은 동일한 학습·검증·시험 분할에 배정한다.
-- 현재 수집 코드는 클래스별 500장, 총 1,000장을 목표로 다운로드 8개 병렬·CLIP 최대 32장 배치 처리로 구성한다.
+- `no_glasses`, `regular_glasses`, `smart_glasses` 세 종류의 사람 이미지를 각 500장, 총 1,500장 목표로 수집한다.
+- CLIP으로 요청한 종류의 사람 이미지를 선별한다. 제품 단독 사진·여러 사람·콜라주·광고·부분 사진도 설명 후보로 비교한다.
+- 동일·유사 중복을 제거하고 출처·검색어·클래스·CLIP 점수를 기록한다.
+- 스마트글래스는 제품명과 착용 검색어를 함께 사용하고, 실제 종류는 출처·제품 정보로 검수한다.
+- 다운로드 8개 스레드, CLIP 최대 32장 배치, 텍스트 특징 재사용으로 처리한다. 설정은 파일 상단에서 수정한다.
+- 사람 이미지 수집 기록에는 `collection=people`을 저장한다. 기존 제품 이미지·CSV는 별도로 보관한 뒤 실행한다.
+- 같은 인물·제품의 학습·검증·시험 분할은 검수 과정에서 관리한다.
 
 **코드:** `code/phase1a_images/image_crawl.py`  
-**원본:** `data/images/regular_glasses/`, `data/images/smart_glasses/`  
+**미리보기:** `code/phase1a_images/crawl_temp.ipynb` — 같은 검색어·CLIP 필터로 클래스별 최대 5장 표시
+
+**원본:** `data/images/no_glasses/`, `data/images/regular_glasses/`, `data/images/smart_glasses/`
 **기록:** `results/phase1a_images/results.md`, `results/phase1a_images/metadata.csv`
 
 ### 1b. 일반 안경 / 스마트글래스 영상
@@ -88,23 +104,34 @@ BUTAMI/
 
 ## Phase 2. 안경 영역·특징 추출
 
-### 2a. 이미지 bbox 생성·검출기 학습·특징 추출
+### 2a. 이미지 얼굴·안경 bbox 생성·검출기 학습·특징 추출
 
-**1a 이미지 → GlassesSegmenter → 마스크·bbox → 검수·주석 → RT-DETRv4 학습 → ROI 특징 → 3a**
+**1a 사람 이미지 → YuNet 얼굴 bbox → 얼굴 주변 GlassesSegmenter → 원본 좌표 COCO JSON**
 
-1. **GlassesSegmenter(`kind="full"`)**로 안경 마스크를 생성한다.
-2. 마스크의 최소·최대 좌표로 외접 bbox `[xmin, ymin, xmax, ymax]`를 생성한다.
-3. bbox를 검수·수정하고 이미지 ID·종류 라벨·원본 좌표를 함께 기록한다. 빈 마스크는 검수 대상으로 남긴다.
-4. 검수한 bbox로 **원본 이미지를 crop**해 안경다리·렌즈·카메라 등 bbox 내부의 원본 픽셀을 보존한다.
-5. 검수 bbox를 COCO 형식으로 저장하고, **RT-DETRv4-S를 `glasses` 1-class 검출기**로 학습한다.
-6. **DINOv3**를 특징 증류 교사로 사용한다. 동일 이미지의 DINOv3 특징과 RT-DETRv4의 대응 특징을 정렬해 검출 학습에 증류 손실을 결합한다.
-7. 학습한 RT-DETRv4의 **HybridEncoder 특징맵과 안경 bbox → ROI pooling → 고정 길이 특징 벡터**를 추출한다.
+현재 `code/phase2a_extract/extract_bbox.py`의 처리 범위:
 
-**3a 전달:** 검수한 원본 안경 crop, 종류 라벨, ROI 특징 벡터.  
+1. 세 종류 폴더의 JPEG를 읽고 **YuNet**으로 얼굴 bbox를 검출한다.
+2. 얼굴 주변을 1.8배 확장해 **GlassesSegmenter(`kind="full", size="medium"`)**로 안경 마스크를 계산한다.
+3. 마스크 외접 bbox를 원본 이미지 좌표로 복원하고 얼굴·안경 bbox를 함께 저장한다. 빈 마스크는 안경 주석을 생성하지 않는다.
+4. 모든 이미지를 **`data/annotations/face_glasses.json`**에 기록한다. 얼굴 미검출 이미지도 `images`에 포함한다.
+5. COCO `images / annotations / categories` 구조를 사용한다. 카테고리는 `1=face`, `2=glasses`, bbox는 원본 픽셀 기준 `[x, y, width, height]`다. 파일 경로는 `data/images/` 기준이다.
+6. 최대 32개 얼굴 crop을 배치 처리하고 GPU에서는 마스크 대신 bbox 네 좌표만 CPU로 가져온다. crop·마스크는 메모리에서 사용한다.
+
+후속 2a 학습·특징 추출:
+
+- 자동 bbox를 검수·수정하고 **`glasses` 주석**으로 RT-DETRv4-S 1-class 검출기를 학습한다.
+- 검수 bbox로 원본 안경 crop을 생성해 안경다리·렌즈·카메라 등 원본 픽셀을 보존한다.
+- DINOv3의 대응 특징과 RT-DETRv4 특징을 정렬해 검출 학습에 특징 증류 손실을 결합한다.
+- HybridEncoder 특징맵과 안경 bbox에 ROI pooling을 적용해 고정 길이 특징 벡터를 추출한다.
+
+**3a 전달:** 후속 단계에서 생성한 원본 안경 crop, 종류 라벨, ROI 특징 벡터.
 **2b 전달:** 학습한 RT-DETRv4 검출기와 동일한 ROI 특징 추출 구성.  
-**주석:** `data/annotations/`  
-**코드 / 결과:** `code/phase2a_extract/` ↔ `results/phase2a_extract/`  
-**체크포인트:** `ckpt/phase2a_extract/`
+**코드:** `code/phase2a_extract/extract_bbox.py`
+
+**bbox 주석:** `data/annotations/face_glasses.json`
+
+**작업 기록:** `results/phase2a_extract/results.md`
+**학습 체크포인트:** `ckpt/phase2a_extract/`
 
 ### 2b. 영상 얼굴·안경 검출·특징 추출
 
@@ -154,11 +181,11 @@ BUTAMI/
 | 모델 | 단계 | 입력 → 출력·전달 대상 |
 | --- | --- | --- |
 | CLIP 수집 필터 | 1a | 검색 이미지 → 선별 이미지 → 2a |
-| GlassesSegmenter(`full`) | 2a | 이미지 → 마스크 → bbox 초안 → 검수·COCO 주석 |
+| GlassesSegmenter(`full`) | 2a | 얼굴 주변 영역 → 안경 마스크 → 원본 좌표 bbox·COCO 주석 |
 | DINOv3 | 2a | 동일 이미지 → 교사 특징 → RT-DETRv4 특징 증류 |
 | RT-DETRv4-S | 2a → 2b | 이미지·프레임 → 안경 bbox·HybridEncoder 특징맵 |
 | ROI pooling | 2a → 3a / 2b → 3b | 특징맵 + bbox → 안경별 고정 길이 특징 |
-| YuNet | 2b | 영상 프레임 → 얼굴 영역 → RT-DETRv4 |
+| YuNet | 2a / 2b | 사람 이미지·영상 프레임 → 얼굴 bbox·주변 영역 |
 | CLIP + 분류 헤드 | 3a | 원본 안경 crop → 일반/스마트 예측 분포 → MLP 증류 |
 | MLP | 3a → 3b | ROI 특징 → 일반/스마트 점수·판정 |
 
@@ -172,7 +199,18 @@ CLIP의 이미지 선별과 종류 분류는 각각 별도의 역할이다. DINO
 | `ckpt/phase2a_extract/` | 학습한 안경 검출기와 특징 정렬 모듈 |
 | `ckpt/phase3a_train/` | CLIP 분류 teacher, MLP student, 클래스·특징 전처리·임계값 |
 
-YuNet 파일은 `ckpt/pretrained/face_detection_yunet_2023mar.onnx`, 수집 코드의 CLIP 캐시는 `ckpt/pretrained/clip/`에 둔다.
+YuNet은 `ckpt/pretrained/face_detection_yunet_2023mar.onnx`, 안경 분할 가중치는 `ckpt/pretrained/segmentation_full_lraspp_mobilenet_v3_large.pth`, CLIP 캐시는 `ckpt/pretrained/clip/`에 둔다. 추출기는 없는 YuNet·안경 분할 가중치를 공식 배포 URL에서 다운로드하고 로컬 파일을 재사용한다.
+
+## 실행 순서와 확인
+
+Python 3.12 환경에서 수집 코드에 필요한 `ddgs`, `requests`, `Pillow`, `torch`, `transformers`, `ImageHash`를 준비한다. 추출에는 `opencv-python-headless`, `numpy`, `torchvision`과 `third_party/glasses-detector/`의 실행 의존성도 준비한다.
+
+1. IDE에서 `code/phase1a_images/image_crawl.py` 실행 → 사람 이미지·CSV 저장.
+2. 이미지 종류·착용 상태 검수.
+3. IDE에서 `code/phase2a_extract/extract_bbox.py` 실행 → 얼굴·안경 COCO JSON 저장.
+4. bbox 검수 후 후속 학습에 사용.
+
+`tests/test_image_pipeline.py`는 외부 검색·모델을 대체해 세 클래스 수집·중복 제거·이어받기, bbox 원본 좌표 복원, 빈 마스크, 여러 얼굴, COCO 저장을 검사한다. 저장소 루트에서 `python -m unittest discover -s tests -v`로 실행한다. 실제 수집 수량과 모델 추론 품질은 실행 환경에서 확인한다.
 
 ## 원본 출처
 
@@ -181,3 +219,4 @@ YuNet 파일은 `ckpt/pretrained/face_detection_yunet_2023mar.onnx`, 수집 코�
 - [OpenAI CLIP](https://github.com/openai/CLIP)
 - [OpenCV Zoo YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)
 - [mantasu/glasses-detector](https://github.com/mantasu/glasses-detector): 포함된 [MIT License](third_party/glasses-detector/LICENSE) 및 저작권 표시 유지.
+

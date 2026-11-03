@@ -127,12 +127,14 @@ class CollectionTests(unittest.TestCase):
 class BboxTests(unittest.TestCase):
     def test_face_resize_restores_original_coordinates(self):
         detector = Mock()
-        detector.detect.return_value = (0, np.array([[100, 50, 200, 100], [600, 300, 100, 100]], dtype=np.float32))
+        detector.detect.return_value = (0, np.array([[100, 50, 200, 100] + [0] * 10 + [0.92], [600, 300, 100, 100] + [0] * 10 + [0.87]], dtype=np.float32))
         cv2 = types.SimpleNamespace(resize=lambda image, size: np.zeros((size[1], size[0], 3), dtype=np.uint8))
         with patch.dict("sys.modules", {"cv2": cv2}):
             result = bbox.detect_faces(detector, Image.new("RGB", (1600, 800)))
         detector.setInputSize.assert_called_once_with((640, 320))
-        self.assertEqual(result, [[250, 125, 500, 250], [1500, 750, 100, 50]])
+        self.assertEqual([box for box, score in result], [[250, 125, 500, 250], [1500, 750, 100, 50]])
+        self.assertAlmostEqual(result[0][1], 0.92, places=6)
+        self.assertAlmostEqual(result[1][1], 0.87, places=6)
 
     def test_crop_projection_clipping_and_empty_mask(self):
         self.assertEqual(bbox.project_box([64, 64, 192, 192], [10, 20, 100, 80]), [35, 40, 50, 40])
@@ -148,12 +150,12 @@ class BboxTests(unittest.TestCase):
             Image.new("RGB", size).save(path)
 
     def test_coco_multiple_faces_empty_glasses_and_no_face_image(self):
-        segmenter = Mock(side_effect=[[[256, 256, 0, 0], [64, 64, 192, 192]], [[0, 0, 256, 256]]])
+        segmenter = Mock(side_effect=[[[256, 256, 0, 0, 0.05], [64, 64, 192, 192, 0.9]], [[0, 0, 256, 256, 0.8]]])
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.make_images(root)
             with patch.object(bbox, "BATCH_SIZE", 2), \
-                 patch.object(bbox, "detect_faces", side_effect=[[[10, 10, 40, 40]], [[0, 0, 20, 20], [90, 60, 30, 40]], []]), \
+                 patch.object(bbox, "detect_faces", side_effect=[[([10, 10, 40, 40], 0.97)], [([0, 0, 20, 20], 0.96), ([90, 60, 30, 40], 0.95)], []]), \
                  redirect_stdout(io.StringIO()):
                 data = bbox.extract(root, Mock(), segmenter)
             saved = json.loads((root / "data/annotations/face_glasses.json").read_text())
@@ -172,7 +174,52 @@ class BboxTests(unittest.TestCase):
                 self.assertTrue(0 <= y < y + h <= image["height"])
                 self.assertEqual(annotation["area"], w * h)
                 self.assertEqual(annotation["iscrowd"], 0)
+                self.assertTrue(0 <= annotation["score"] <= 1)
+                if annotation["category_id"] == 1:
+                    self.assertIn("glasses_probability", annotation)
+                else:
+                    face = next(a for a in data["annotations"] if a["id"] == annotation["face_id"])
+                    self.assertEqual(face["category_id"], 1)
+                    self.assertEqual(face["image_id"], annotation["image_id"])
+                    self.assertEqual(face["glasses_probability"], annotation["score"])
             self.assertTrue(all(not Path(image["file_name"]).is_absolute() for image in data["images"]))
+
+    def test_face_score_threshold(self):
+        detector = Mock()
+        detector.detect.return_value = (0, np.array([[10, 10, 20, 20] + [0] * 10 + [score] for score in [0.49, 0.5, 0.51, float("nan")]]))
+        with patch.dict("sys.modules", {"cv2": types.SimpleNamespace()}):
+            faces = bbox.detect_faces(detector, Image.new("RGB", (100, 100)))
+        self.assertEqual([score for box, score in faces], [0.5, 0.51])
+
+    def test_nonempty_glasses_masks_are_filtered_by_presence_probability(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_images(root)
+            segmenter = Mock(return_value=[[0, 0, 256, 256, p] for p in [0.039, 0.499, 0.5]])
+            with patch.object(bbox, "detect_faces", return_value=[([10, 10, 40, 40], 0.95)]), redirect_stdout(io.StringIO()):
+                data = bbox.extract(root, Mock(), segmenter)
+            faces = [a for a in data["annotations"] if a["category_id"] == 1]
+            glasses = [a for a in data["annotations"] if a["category_id"] == 2]
+            self.assertEqual([a["glasses_probability"] for a in faces], [0.039, 0.499, 0.5])
+            self.assertEqual(len(glasses), 1)
+            self.assertEqual(glasses[0]["image_id"], 3)
+            self.assertEqual(glasses[0]["score"], 0.5)
+            self.assertEqual(glasses[0]["face_id"], faces[2]["id"])
+            self.assertTrue(all(a["score"] == 0.95 for a in faces))
+
+    def test_multiple_people_use_their_own_presence_probability(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_images(root)
+            segmenter = Mock(return_value=[[0, 0, 256, 256, 0.1], [0, 0, 256, 256, 0.95]])
+            with patch.object(bbox, "detect_faces", side_effect=[[([1, 1, 20, 20], 0.8), ([60, 30, 20, 20], 0.9)], [], []]), redirect_stdout(io.StringIO()):
+                data = bbox.extract(root, Mock(), segmenter)
+            faces = [a for a in data["annotations"] if a["category_id"] == 1]
+            glasses = [a for a in data["annotations"] if a["category_id"] == 2]
+            self.assertEqual(len(glasses), 1)
+            self.assertEqual(glasses[0]["face_id"], faces[1]["id"])
+            self.assertEqual(glasses[0]["score"], 0.95)
+            self.assertGreater(glasses[0]["bbox"][0], 40)
 
     def test_failure_preserves_existing_json(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -181,7 +228,7 @@ class BboxTests(unittest.TestCase):
             output = root / "data/annotations/face_glasses.json"
             output.parent.mkdir(parents=True)
             output.write_text('{"previous": true}\n')
-            with patch.object(bbox, "detect_faces", return_value=[[1, 1, 20, 20]]), self.assertRaises(RuntimeError):
+            with patch.object(bbox, "detect_faces", return_value=[([1, 1, 20, 20], 0.9)]), self.assertRaises(RuntimeError):
                 bbox.extract(root, Mock(), Mock(side_effect=RuntimeError("inference failed")))
             self.assertEqual(output.read_text(), '{"previous": true}\n')
             self.assertFalse(output.with_suffix(".json.tmp").exists())

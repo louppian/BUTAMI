@@ -3,7 +3,6 @@
 import json
 import math
 import shutil
-import sys
 from pathlib import Path
 from urllib.request import urlopen
 
@@ -13,10 +12,12 @@ from PIL import Image, ImageOps
 ROOT = Path(__file__).resolve().parents[2]
 CLASSES = ("no_glasses", "regular_glasses", "smart_glasses")
 BATCH_SIZE = 32
-FACE_THRESHOLD = 0.7
+FACE_THRESHOLD = 0.5
+GLASSES_THRESHOLD = 0.5
 FACE_EXPAND = 1.8
 FACE_MAX_SIZE = 640
 YUNET_URL = "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+CLASSIFIER_URL = "https://github.com/mantasu/glasses-detector/releases/download/v1.0.0/classification_anyglasses_shufflenet_v2_x1_0.pth"
 GLASSES_URL = "https://github.com/mantasu/glasses-detector/releases/download/v1.0.0/segmentation_full_lraspp_mobilenet_v3_large.pth"
 
 
@@ -69,9 +70,12 @@ def detect_faces(detector, image):
         return []
     boxes = []
     for face in faces:
+        score = float(face[-1])
+        if not math.isfinite(score) or not FACE_THRESHOLD <= score <= 1:
+            continue
         box = clip_box([face[0] * width / size[0], face[1] * height / size[1], face[2] * width / size[0], face[3] * height / size[1]], width, height)
         if box is not None:
-            boxes.append(box)
+            boxes.append((box, score))
     return boxes
 
 
@@ -79,13 +83,21 @@ class GlassesExtractor:
     def __init__(self, root):
         import torch
 
-        sys.path.insert(0, str(root / "third_party/glasses-detector/src"))
-        from glasses_detector import GlassesSegmenter
+        from torchvision.models import shufflenet_v2_x1_0
+        from torchvision.models.segmentation import lraspp_mobilenet_v3_large
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         weights = ensure_weights(root / "ckpt/pretrained/segmentation_full_lraspp_mobilenet_v3_large.pth", GLASSES_URL)
-        self.model = GlassesSegmenter(kind="full", size="medium", weights=str(weights), device=self.device).model.eval()
+        self.model = lraspp_mobilenet_v3_large(weights=None, weights_backbone=None, num_classes=1)
+        self.model.load_state_dict(torch.load(weights, map_location="cpu", weights_only=True))
+        self.model = self.model.to(self.device).eval()
         self.model.requires_grad_(False)
+        weights = ensure_weights(root / "ckpt/pretrained/torch/checkpoints/classification_anyglasses_shufflenet_v2_x1_0.pth", CLASSIFIER_URL)
+        self.classifier = shufflenet_v2_x1_0(weights=None)
+        self.classifier.fc = torch.nn.Linear(1024, 1)
+        self.classifier.load_state_dict(torch.load(weights, map_location="cpu", weights_only=True))
+        self.classifier = self.classifier.to(self.device).eval()
+        self.classifier.requires_grad_(False)
         self.mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
         self.std = torch.tensor([0.229, 0.224, 0.225], device=self.device).view(1, 3, 1, 1)
         self.positions = torch.arange(256, device=self.device)
@@ -96,14 +108,17 @@ class GlassesExtractor:
         pixels = np.stack([np.asarray(image.resize((256, 256))) for image in images]).transpose(0, 3, 1, 2).copy()
         with torch.inference_mode(), torch.autocast(device_type=self.device, dtype=torch.float16, enabled=self.device == "cuda"):
             pixels = torch.from_numpy(pixels).to(self.device, dtype=torch.float32).div_(255)
-            masks = self.model((pixels - self.mean) / self.std)["out"][:, 0] > 0
+            pixels = (pixels - self.mean) / self.std
+            probabilities = self.classifier(pixels).float().sigmoid().flatten()
+            masks = self.model(pixels)["out"][:, 0] > 0
             rows, columns = masks.any(dim=2), masks.any(dim=1)
-            # 256×256 마스크 대신 bbox 네 좌표만 배치 단위로 CPU에 전달한다.
+            # 마스크 대신 bbox 네 좌표와 착용 확률만 배치당 한 번 CPU로 전달한다.
             return torch.stack((
                 torch.where(columns, self.positions, 256).amin(1),
                 torch.where(rows, self.positions, 256).amin(1),
                 torch.where(columns, self.positions + 1, 0).amax(1),
                 torch.where(rows, self.positions + 1, 0).amax(1),
+                probabilities,
             ), dim=1).cpu().tolist()
 
 
@@ -122,18 +137,28 @@ def extract(root, detector, segmenter):
         raise ValueError(f"입력 이미지를 확인하세요: {root / 'data/images'}")
     pending = []
 
-    def annotate(image_id, category, box):
-        data["annotations"].append({"id": len(data["annotations"]) + 1, "image_id": image_id, "category_id": category,
-                                    "bbox": box, "area": box[2] * box[3], "iscrowd": 0})
+    def annotate(image_id, category, box, score, face_id=None):
+        annotation = {"id": len(data["annotations"]) + 1, "image_id": image_id, "category_id": category,
+                      "bbox": box, "area": box[2] * box[3], "iscrowd": 0, "score": score}
+        if face_id is not None:
+            annotation["face_id"] = face_id
+        data["annotations"].append(annotation)
+        return annotation
 
     def flush():
-        bounds = segmenter([item[2] for item in pending])
+        bounds = segmenter([item[3] for item in pending])
         if len(bounds) != len(pending):
             raise ValueError("안경 추출 결과와 입력 이미지 수가 다릅니다.")
-        for (image_id, crop, _), bound in zip(pending, bounds):
-            box = project_box(bound, crop)
+        for (image_id, face, crop, _), result in zip(pending, bounds):
+            probability = float(result[4])
+            if not math.isfinite(probability) or not 0 <= probability <= 1:
+                raise ValueError("안경 착용 확률을 확인하세요.")
+            face["glasses_probability"] = probability
+            if probability < GLASSES_THRESHOLD:
+                continue
+            box = project_box(result[:4], crop)
             if box is not None:
-                annotate(image_id, 2, box)
+                annotate(image_id, 2, box, probability, face["id"])
         pending.clear()
 
     for image_id, path in enumerate(paths, 1):
@@ -141,11 +166,11 @@ def extract(root, detector, segmenter):
             image = ImageOps.exif_transpose(original).convert("RGB")
         width, height = image.size
         data["images"].append({"id": image_id, "file_name": path.relative_to(root / "data/images").as_posix(), "width": width, "height": height})
-        for box in detect_faces(detector, image):
-            annotate(image_id, 1, box)
+        for box, score in detect_faces(detector, image):
+            face = annotate(image_id, 1, box, score)
             crop = expand_box(box, width, height)
             x, y, w, h = crop
-            pending.append((image_id, crop, image.crop((x, y, x + w, y + h))))
+            pending.append((image_id, face, crop, image.crop((x, y, x + w, y + h))))
             if len(pending) == BATCH_SIZE:
                 flush()
         if image_id % 100 == 0:

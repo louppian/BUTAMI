@@ -48,7 +48,9 @@ BUTAMI/
 │   ├── pretrained/
 │   │   ├── clip/
 │   │   ├── face_detection_yunet_2023mar.onnx
-│   │   └── segmentation_full_lraspp_mobilenet_v3_large.pth
+│   │   ├── segmentation_full_lraspp_mobilenet_v3_large.pth
+│   │   └── torch/checkpoints/
+│   │       └── classification_anyglasses_shufflenet_v2_x1_0.pth
 │   ├── phase2a_extract/
 │   └── phase3a_train/
 ├── third_party/
@@ -111,12 +113,12 @@ BUTAMI/
 
 현재 `code/phase2a_extract/extract_bbox.py`의 처리 범위:
 
-1. 세 종류 폴더의 JPEG를 읽고 **YuNet**으로 얼굴 bbox를 검출한다.
-2. 얼굴 주변을 1.8배 확장해 **GlassesSegmenter(`kind="full", size="medium"`)**로 안경 마스크를 계산한다.
-3. 마스크 외접 bbox를 원본 이미지 좌표로 복원하고 얼굴·안경 bbox를 함께 저장한다. 빈 마스크는 안경 주석을 생성하지 않는다.
+1. 세 종류 폴더의 JPEG를 읽고 **YuNet**으로 얼굴 bbox를 검출한다. 기본 임계값은 0.5이고 얼굴별 탐지 점수를 저장한다.
+2. 얼굴 주변을 1.8배 확장해 **anyglasses-medium 분류기**로 안경 착용 확률을 계산하고 **full-medium 분할기**로 안경 마스크를 계산한다. 동일한 공식 가중치를 torchvision 모델에 직접 로드해 Python 3.10 이상에서 실행한다.
+3. 안경 착용 확률 0.5 미만의 안경 bbox와 빈 마스크를 제외하고, 남은 안경 bbox를 원본 좌표로 복원해 저장한다.
 4. 모든 이미지를 **`data/annotations/face_glasses.json`**에 기록한다. 얼굴 미검출 이미지도 `images`에 포함한다.
-5. COCO `images / annotations / categories` 구조를 사용한다. 카테고리는 `1=face`, `2=glasses`, bbox는 원본 픽셀 기준 `[x, y, width, height]`다. 파일 경로는 `data/images/` 기준이다.
-6. 최대 32개 얼굴 crop을 배치 처리하고 GPU에서는 마스크 대신 bbox 네 좌표만 CPU로 가져온다. crop·마스크는 메모리에서 사용한다.
+5. COCO `images / annotations / categories` 구조를 사용한다. 카테고리는 `1=face`, `2=glasses`, bbox는 원본 픽셀 기준 `[x, y, width, height]`다. 얼굴의 `score`는 YuNet 점수, `glasses_probability`는 안경 착용 확률이다. 안경의 `score`는 안경 착용 확률이며 `face_id`로 해당 얼굴 주석을 연결한다. 파일 경로는 `data/images/` 기준이다.
+6. 최대 32개 얼굴 crop을 배치 처리하고 GPU에서는 bbox 네 좌표와 착용 확률만 배치당 한 번 CPU로 가져온다. crop·마스크는 메모리에서 사용한다.
 
 후속 2a 학습·특징 추출:
 
@@ -182,7 +184,8 @@ BUTAMI/
 | 모델 | 단계 | 입력 → 출력·전달 대상 |
 | --- | --- | --- |
 | CLIP 수집 필터 | 1a | 검색 이미지 → 선별 이미지 → 2a |
-| GlassesSegmenter(`full`) | 2a | 얼굴 주변 영역 → 안경 마스크 → 원본 좌표 bbox·COCO 주석 |
+| GlassesClassifier(`anyglasses`) 가중치 | 2a | 얼굴 주변 영역 → 안경 착용 확률 → bbox 저장 여부 |
+| GlassesSegmenter(`full`) 가중치 | 2a | 얼굴 주변 영역 → 안경 마스크 → 원본 좌표 bbox·COCO 주석 |
 | DINOv3 | 2a | 동일 이미지 → 교사 특징 → RT-DETRv4 특징 증류 |
 | RT-DETRv4-S | 2a → 2b | 이미지·프레임 → 안경 bbox·HybridEncoder 특징맵 |
 | ROI pooling | 2a → 3a / 2b → 3b | 특징맵 + bbox → 안경별 고정 길이 특징 |
@@ -200,15 +203,15 @@ CLIP의 이미지 선별과 종류 분류는 각각 별도의 역할이다. DINO
 | `ckpt/phase2a_extract/` | 학습한 안경 검출기와 특징 정렬 모듈 |
 | `ckpt/phase3a_train/` | CLIP 분류 teacher, MLP student, 클래스·특징 전처리·임계값 |
 
-YuNet은 `ckpt/pretrained/face_detection_yunet_2023mar.onnx`, 안경 분할 가중치는 `ckpt/pretrained/segmentation_full_lraspp_mobilenet_v3_large.pth`, CLIP 캐시는 `ckpt/pretrained/clip/`에 둔다. 추출기는 없는 YuNet·안경 분할 가중치를 공식 배포 URL에서 다운로드하고 로컬 파일을 재사용한다.
+YuNet은 `ckpt/pretrained/face_detection_yunet_2023mar.onnx`, 안경 분할 가중치는 `ckpt/pretrained/segmentation_full_lraspp_mobilenet_v3_large.pth`, CLIP 캐시는 `ckpt/pretrained/clip/`에 둔다. 안경 착용 분류기는 `ckpt/pretrained/torch/checkpoints/classification_anyglasses_shufflenet_v2_x1_0.pth`를 사용한다. 추출기는 없는 YuNet·안경 분류·분할 가중치를 공식 배포 URL에서 다운로드하고 로컬 파일을 재사용한다.
 
 ## 실행 순서와 확인
 
-Python 3.12 환경에서 수집 코드에 필요한 `ddgs`, `requests`, `Pillow`, `torch`, `transformers`, `ImageHash`를 준비한다. 추출에는 `opencv-python-headless`, `numpy`, `torchvision`과 `third_party/glasses-detector/`의 실행 의존성도 준비한다.
+Python 3.12 환경에서 수집 코드에 필요한 `ddgs`, `requests`, `Pillow`, `torch`, `transformers`, `ImageHash`를 준비한다. 추출은 Python 3.10 이상에서 `opencv-python-headless`, `numpy`, `Pillow`, `torch`, `torchvision`으로 실행한다.
 
 1. IDE에서 `code/phase1a_images/image_crawl.py` 실행 → 사람 이미지·CSV 저장.
 2. 이미지 종류·착용 상태 검수.
-3. IDE에서 `code/phase2a_extract/extract_bbox.py` 실행 → 얼굴·안경 COCO JSON 저장.
+3. IDE에서 `code/phase2a_extract/extract_bbox.py` 실행 → 얼굴 점수·안경 착용 확률을 포함한 COCO JSON 저장. 기존 JSON도 다시 추출해 갱신한다.
 4. bbox 검수 후 후속 학습에 사용.
 
 `tests/test_image_pipeline.py`는 외부 검색·모델을 대체해 세 클래스 수집·중복 제거·이어받기, bbox 원본 좌표 복원, 빈 마스크, 여러 얼굴, COCO 저장을 검사한다. 저장소 루트에서 `python -m unittest discover -s tests -v`로 실행한다. 실제 수집 수량과 모델 추론 품질은 실행 환경에서 확인한다.

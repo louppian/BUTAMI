@@ -77,7 +77,6 @@ def download(result):
         return None
 
 
-<<<<<<< HEAD
 def load_clip(root):
     import torch
     from transformers import CLIPModel, CLIPProcessor
@@ -106,13 +105,6 @@ def score_images(images, processor, model, text_features, device):
 
 def main():
     root = ROOT
-=======
-if __name__ == "__main__":
-    root = Path(__file__).resolve().parents[2]
-    target = 500
-    batch_size = 128
-    workers = 8
->>>>>>> a499c91 (temp)
     warnings.simplefilter("error", Image.DecompressionBombWarning)
     metadata = root / "results/phase1a_images/metadata.csv"
     seen, hashes, counts = set(), [], dict.fromkeys(CLASSES, 0)

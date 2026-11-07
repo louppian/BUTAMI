@@ -2,7 +2,7 @@
 
 ## 목적과 입출력
 
-- 코드: `code/phase2a_extract/extract_bbox.py`
+- 코드: `code/phase2a_extract/bbox/extract_bbox.py`
 - 입력: `data/images/no_glasses/`, `data/images/regular_glasses/`, `data/images/smart_glasses/`의 JPEG
 - 산출물: `data/annotations/face_glasses.json`
 - 가중치: `ckpt/pretrained/face_detection_yunet_2023mar.onnx`, `ckpt/pretrained/segmentation_full_lraspp_mobilenet_v3_large.pth`, `ckpt/pretrained/torch/checkpoints/classification_anyglasses_shufflenet_v2_x1_0.pth`
@@ -46,7 +46,7 @@ Python 3.10 이상에서 `opencv-python-headless`, `numpy`, `Pillow`, `torch`, `
 
 자동 선택된 얼굴도 원본 이미지의 라벨 대상과 일치하는지 검수한다. 특히 광고·합성·가림 장면에서는 인물 확인이 필요하다. 검수 후 주대상 얼굴을 정하려면 해당 이미지의 `selected_face_id`를 같은 이미지의 얼굴 주석 ID로 지정하고 `selection_status`를 `reviewed`로 기록한다. 검수 대기 이미지는 `selected_face_id=null`을 유지한다.
 
-`code/phase3a_train/train_mlp.py`는 이 JSON의 선택된 얼굴만 사용한다. 안경 bbox 누락과 낮은 착용 확률은 검출 모델의 결과로 기록하며 원본 수집 라벨을 유지한다.
+`code/phase3a_train/clip_mlp/train_mlp.py`는 이 JSON의 선택된 얼굴만 사용한다. 안경 bbox 누락과 낮은 착용 확률은 검출 모델의 결과로 기록하며 원본 수집 라벨을 유지한다.
 
 ## 후속 작업
 

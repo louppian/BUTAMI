@@ -8,7 +8,7 @@
 - 중단 후 이어받기: `code/phase1a_images/image_crawl.py`
 - 원본: `data/images/no_glasses/`, `data/images/regular_glasses/`, `data/images/smart_glasses/`
 - 출처·수집 기록: `results/phase1a_images/metadata.csv`
-- 다음 단계: `code/phase2a_extract/extract_bbox.py`에서 얼굴·안경 bbox를 생성한다.
+- 다음 단계: `code/phase2a_extract/bbox/extract_bbox.py`에서 얼굴·안경 bbox를 생성한다.
 
 ## 실행 준비
 

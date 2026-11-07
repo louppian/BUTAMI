@@ -14,8 +14,8 @@
 !/results/**/
 !/results/**/.gitkeep
 !/results/phase1a_images/results.md
-!/results/phase2a_extract/results.md
-!/results/phase3a_train/results.md
+!/results/phase2a_extract/bbox/results.md
+!/results/phase3a_train/clip_mlp/results.md
 /ckpt/**
 !/ckpt/**/
 !/ckpt/**/.gitkeep

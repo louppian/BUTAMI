@@ -9,7 +9,7 @@ from urllib.request import urlopen
 import numpy as np
 from PIL import Image, ImageOps
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 CLASSES = ("no_glasses", "regular_glasses", "smart_glasses")
 BATCH_SIZE = 32
 FACE_THRESHOLD = 0.5

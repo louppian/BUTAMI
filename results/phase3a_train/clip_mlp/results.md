@@ -2,7 +2,7 @@
 
 ## 입력과 실행
 
-- 코드: `code/phase3a_train/train_mlp.py`
+- 코드: `code/phase3a_train/clip_mlp/train_mlp.py`
 - 입력: 2a의 `data/annotations/face_glasses.json`, `data/images/`의 원본 이미지
 - 환경: Python 3.10 이상, `torch`, `transformers`, `numpy`, `Pillow`, `matplotlib`
 - CLIP: `openai/clip-vit-base-patch32`, `ckpt/pretrained/clip/`의 로컬 캐시 재사용
@@ -44,12 +44,12 @@ bbox가 없는 사진도 MLP의 원래 예측을 평가한다. 테스트 정확�
 
 | 경로 | 내용 |
 | --- | --- |
-| `ckpt/phase3a_train/clip_mlp_3class.pt` | MLP 가중치, 클래스 순서, backbone·특징 차원·crop 설정 |
-| `results/phase3a_train/metrics.json` | 원래 MLP 정확도·혼동행렬, 선택/제외 수, 충돌·bbox 누락·보류 수 |
-| `results/phase3a_train/predictions.csv` | 원본 경로·얼굴 ID·정답·원래 예측·세 확률·착용 확률·최종 상태 |
-| `results/phase3a_train/excluded_images.csv` | 얼굴 선택 조건에서 제외된 이미지와 이유 |
-| `results/phase3a_train/confusion_matrix.png` | 원래 MLP 예측의 혼동행렬 |
-| `results/phase3a_train/misclassified_001.png` 등 | 오분류 원본 이미지, 선택된 얼굴·연결된 안경 bbox와 점수 |
+| `ckpt/phase3a_train/clip_mlp/clip_mlp_3class.pt` | MLP 가중치, 클래스 순서, backbone·특징 차원·crop 설정 |
+| `results/phase3a_train/clip_mlp/metrics.json` | 원래 MLP 정확도·혼동행렬, 선택/제외 수, 충돌·bbox 누락·보류 수 |
+| `results/phase3a_train/clip_mlp/predictions.csv` | 원본 경로·얼굴 ID·정답·원래 예측·세 확률·착용 확률·최종 상태 |
+| `results/phase3a_train/clip_mlp/excluded_images.csv` | 얼굴 선택 조건에서 제외된 이미지와 이유 |
+| `results/phase3a_train/clip_mlp/confusion_matrix.png` | 원래 MLP 예측의 혼동행렬 |
+| `results/phase3a_train/clip_mlp/misclassified_001.png` 등 | 오분류 원본 이미지, 선택된 얼굴·연결된 안경 bbox와 점수 |
 
 오분류 그림은 페이지당 최대 15장으로 생성한다. 초록은 선택된 얼굴, 빨강은 해당 얼굴에 연결된 안경 bbox다. 제목에 원래 MLP 예측·확률과 `final_class`, 충돌·누락 이유를 함께 표시한다. 재실행 시 같은 스크립트의 이전 오분류 페이지를 갱신한다.
 

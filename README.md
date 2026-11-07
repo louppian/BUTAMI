@@ -19,14 +19,15 @@ BUTAMI/
 ├── code/
 │   ├── phase1a_images/
 │   │   ├── image_crawl.py
-│   │   ├── recollect_images.py
-│   │   └── crawl_temp.ipynb
+│   │   └── recollect_images.py
 │   ├── phase1b_videos/
 │   ├── phase2a_extract/
-│   │   └── extract_bbox.py
+│   │   ├── extract_bbox.py
+│   │   └── review_bbox.ipynb
 │   ├── phase2b_video_check/
 │   ├── phase3a_train/
-│   │   └── train_mlp.py
+│   │   ├── train_mlp.py
+│   │   └── run_mlp.ipynb
 │   └── phase3b_video_check/
 ├── data/
 │   ├── images/
@@ -100,8 +101,6 @@ BUTAMI/
 **새 수집:** `code/phase1a_images/recollect_images.py` — 기존 이미지·수집 CSV·bbox JSON을 `data/archive/people_<실행시각>/`에 백업한 뒤 처음부터 수집.
 
 **이어받기:** `code/phase1a_images/image_crawl.py`
-
-**미리보기:** `code/phase1a_images/crawl_temp.ipynb` — 같은 검색어·CLIP 필터로 클래스별 최대 5장 표시
 
 **원본:** `data/images/no_glasses/`, `data/images/regular_glasses/`, `data/images/smart_glasses/`
 **기록:** `results/phase1a_images/results.md`, `results/phase1a_images/metadata.csv`
@@ -248,8 +247,8 @@ Python 3.12 환경에서 수집 코드에 필요한 `ddgs`, `requests`, `Pillow`
 1. IDE에서 `code/phase1a_images/recollect_images.py` 실행 → 기존 이미지·CSV·bbox JSON 백업 → 새 사람 이미지·CSV 수집. 중단 후 이어받기는 `image_crawl.py`를 실행한다.
 2. 이미지 종류·착용 상태 검수.
 3. IDE에서 `code/phase2a_extract/extract_bbox.py` 실행 → 얼굴 점수·안경 착용 확률을 포함한 COCO JSON 저장. 기존 JSON도 다시 추출해 갱신한다.
-4. 원본 라벨과 주대상 얼굴을 검수한다. 검수한 얼굴은 `selected_face_id`에 지정하고, 검수 대기 이미지는 `null`을 유지한다.
-5. IDE에서 `code/phase3a_train/train_mlp.py` 실행 → 3-class MLP·원래 예측 성능·오분류 박스 그림·충돌 및 누락 기록 저장.
+4. `code/phase2a_extract/review_bbox.ipynb`에서 원본 라벨과 주대상 얼굴을 검수한다. 검수한 얼굴은 `selected_face_id`에 지정하고, 검수 대기 이미지는 `null`을 유지한다.
+5. `code/phase3a_train/train_mlp.py` 또는 같은 폴더의 `run_mlp.ipynb` 실행 → 3-class MLP·원래 예측 성능·오분류 박스 그림·충돌 및 누락 기록 저장.
 
 `tests/test_image_pipeline.py`는 외부 검색·모델을 대체해 세 클래스 수집·중복 제거·이어받기, bbox 원본 좌표 복원, 빈 마스크, 여러 얼굴, 주대상 얼굴 선택·검수, COCO 저장, 학습 라벨·원래 예측 보존, 충돌 기록, 오분류 박스 표시를 검사한다. 저장소 루트에서 `python -m unittest discover -s tests -v`로 실행한다. 실제 수집 수량과 모델 추론 품질은 실행 환경에서 확인한다.
 

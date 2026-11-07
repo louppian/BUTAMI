@@ -14,7 +14,7 @@
 
 Python 3.12 환경에 `ddgs`, `requests`, `Pillow`, `torch`, `transformers`, `ImageHash`를 준비하고 IDE에서 파일을 실행한다. 목표 수량·배치 크기·다운로드 스레드 수는 파일 상단의 `TARGET=500`, `BATCH_SIZE=32`, `WORKERS=8`에서 수정한다.
 
-CLIP은 `openai/clip-vit-base-patch32`를 사용하며 가중치를 `ckpt/pretrained/clip/`에 캐시한다. CUDA가 있으면 혼합 정밀도로 처리하고, 그 외에는 CPU를 사용한다. `crawl_temp.ipynb`는 같은 수집 코드의 검색어와 필터를 재사용해 클래스별 최대 5장을 미리 보여준다.
+CLIP은 `openai/clip-vit-base-patch32`를 사용하며 가중치를 `ckpt/pretrained/clip/`에 캐시한다. CUDA가 있으면 혼합 정밀도로 처리하고, 그 외에는 CPU를 사용한다.
 
 기존 제품 수집 데이터는 별도로 보관한 후 사람 이미지 수집을 시작한다. 수집기는 `metadata.csv`의 `collection=people`과 이미지별 기록을 확인한다. 기존 제품용 CSV나 수집 기록 없는 JPEG가 있으면 해당 경로를 알리고 종료해 데이터 혼합을 방지한다.
 

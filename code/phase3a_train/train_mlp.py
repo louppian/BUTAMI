@@ -1,10 +1,8 @@
-"""2a의 선택된 얼굴로 CLIP 특징·3-class MLP를 학습하고 원래 예측을 평가한다."""
+"""메인 학습: 2a bbox 생성 → 고정 CLIP·3-class MLP → confusion matrix·가중치 저장."""
 
-import csv
 import json
 import math
 import random
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -73,36 +71,6 @@ def crop_face(image, box):
                        min(image.width, math.ceil(x + w * (1 + margin))), min(image.height, math.ceil(y + h * (1 + margin)))))
 
 
-def extract_features(root, samples, device):
-    import torch
-    from torch.utils.data import Dataset, DataLoader
-    from transformers import CLIPModel, CLIPProcessor
-
-    cache = str(root / "ckpt/pretrained/clip")
-    processor = CLIPProcessor.from_pretrained(BACKBONE, cache_dir=cache, local_files_only=True)
-    clip = CLIPModel.from_pretrained(BACKBONE, cache_dir=cache, local_files_only=True).to(device).eval()
-    clip.requires_grad_(False)
-
-    class FaceDataset(Dataset):
-        def __len__(self):
-            return len(samples)
-
-        def __getitem__(self, index):
-            sample = samples[index]
-            with Image.open(root / "data/images" / sample["file_name"]) as original:
-                image = ImageOps.exif_transpose(original).convert("RGB")
-            return processor(images=crop_face(image, sample["bbox"]), return_tensors="pt")["pixel_values"][0]
-
-    loader = DataLoader(FaceDataset(), batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=device == "cuda")
-    features = []
-    with torch.inference_mode():
-        for pixels in loader:
-            with torch.autocast(device_type=device, dtype=torch.float16, enabled=device == "cuda"):
-                feature = clip.visual_projection(clip.vision_model(pixel_values=pixels.to(device, non_blocking=True)).pooler_output)
-            features.append(torch.nn.functional.normalize(feature.float(), dim=-1))
-    return torch.cat(features)
-
-
 def evaluate_predictions(samples, test_ids, probabilities):
     probabilities = np.asarray(probabilities)
     if probabilities.shape != (len(test_ids), len(CLASSES)) or not np.isfinite(probabilities).all():
@@ -138,30 +106,6 @@ def evaluate_predictions(samples, test_ids, probabilities):
     return metrics, records
 
 
-def write_csv(path, rows, fields):
-    with path.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def plot_confusion(cm, path):
-    import matplotlib.pyplot as plt
-
-    cm = np.asarray(cm)
-    fig, ax = plt.subplots(figsize=(6, 5))
-    ax.imshow(cm, cmap="Blues")
-    for i in range(len(CLASSES)):
-        for j in range(len(CLASSES)):
-            ax.text(j, i, str(cm[i, j]), ha="center", va="center", color="white" if cm[i, j] > cm.max() / 2 else "black")
-    ax.set(xticks=range(3), yticks=range(3), xticklabels=CLASSES, yticklabels=CLASSES,
-           xlabel="Predicted", ylabel="Actual", title="3-class MLP test (raw)")
-    plt.setp(ax.get_xticklabels(), rotation=25, ha="right")
-    fig.tight_layout()
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-
-
 def draw_error(ax, root, row, annotations, glasses):
     from matplotlib.patches import Rectangle
 
@@ -181,81 +125,79 @@ def draw_error(ax, root, row, annotations, glasses):
     ax.axis("off")
 
 
-def plot_errors(root, data, records, output):
-    import matplotlib.pyplot as plt
-
-    annotations = {ann["id"]: ann for ann in data["annotations"]}
-    glasses = defaultdict(list)
-    for annotation in data["annotations"]:
-        if annotation["category_id"] == 2:
-            glasses[annotation["face_id"]].append(annotation)
-    wrong = [row for row in records if row["actual"] != row["prediction"]]
-    for path in output.glob("misclassified_*.png"):
-        path.unlink()
-    paths = []
-    for start in range(0, len(wrong), 15):
-        batch = wrong[start:start + 15]
-        fig, axes = plt.subplots(math.ceil(len(batch) / 5), 5, figsize=(20, math.ceil(len(batch) / 5) * 4), squeeze=False)
-        for ax in axes.flat:
-            ax.axis("off")
-        for ax, row in zip(axes.flat, batch):
-            draw_error(ax, root, row, annotations, glasses)
-        fig.tight_layout()
-        path = output / f"misclassified_{start // 15 + 1:03d}.png"
-        fig.savefig(path, dpi=150)
-        plt.close(fig)
-        paths.append(path.name)
-    return paths
-
-
 def main():
+    import sys
+    import cv2
     import torch
-    from torch import nn
+    from collections import Counter
+    from torch.utils.data import Dataset, DataLoader
+    from transformers import CLIPModel, CLIPProcessor
+
+    sys.path.insert(0, str(ROOT / "code/phase2a_extract/bbox"))
+    from extract_bbox import GlassesExtractor, extract, ensure_weights, YUNET_URL
+
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    FACE_WEIGHTS = ensure_weights(ROOT / "ckpt/pretrained/face_detection_yunet_2023mar.onnx", YUNET_URL)
+    MLP_WEIGHTS = ROOT / "ckpt/phase3a_train/clip_mlp_3class.pt"
+    MLP_WEIGHTS.parent.mkdir(parents=True, exist_ok=True)
 
     torch.manual_seed(SEED)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    data = json.loads((ROOT / "data/annotations/face_glasses.json").read_text(encoding="utf-8"))
+    cv2.setNumThreads(1)
+    BATCH_SIZE = 32
+    face_detector = cv2.FaceDetectorYN.create(str(FACE_WEIGHTS), '', (640, 640), FACE_THRESHOLD, 0.3, 5000)
+    glasses = GlassesExtractor(ROOT)
+    data = extract(ROOT, face_detector, glasses)
     samples, excluded = build_samples(data)
-    output = ROOT / "results/phase3a_train"
-    output.mkdir(parents=True, exist_ok=True)
-    write_csv(output / "excluded_images.csv", excluded, ["image_id", "file_name", "reason"])
     train_ids, test_ids = stratified_split(samples)
-    print("클래스별 이미지 수:", {label: sum(s["label"] == i for s in samples) for i, label in enumerate(CLASSES)})
-    print(f"device={device} | train={len(train_ids)} | test={len(test_ids)} | face_review={len(excluded)}")
-    features = extract_features(ROOT, samples, device)
-    labels = torch.tensor([sample["label"] for sample in samples], dtype=torch.long, device=device)
-    train_index, test_index = torch.tensor(train_ids, device=device), torch.tensor(test_ids, device=device)
-    x_train, y_train = features[train_index], labels[train_index]
-    mlp = nn.Sequential(nn.Linear(features.shape[1], HIDDEN_DIM), nn.ReLU(), nn.Linear(HIDDEN_DIM, len(CLASSES))).to(device)
+    print('학습 대상:', dict(Counter(CLASSES[s['label']] for s in samples)), '제외:', dict(Counter(s['reason'] for s in excluded)))
+    processor = CLIPProcessor.from_pretrained(BACKBONE, cache_dir=str(ROOT / 'ckpt/pretrained/clip'), local_files_only=True)
+    clip = CLIPModel.from_pretrained(BACKBONE, cache_dir=str(ROOT / 'ckpt/pretrained/clip'), local_files_only=True).to(DEVICE).eval()
+    clip.requires_grad_(False)
+    class Faces(Dataset):
+        def __len__(self): return len(samples)
+        def __getitem__(self, i):
+            with Image.open(ROOT / 'data/images' / samples[i]['file_name']) as image:
+                return processor(images=crop_face(ImageOps.exif_transpose(image).convert('RGB'), samples[i]['bbox']), return_tensors='pt')['pixel_values'][0]
+    features = []
+    with torch.inference_mode():
+        for pixels in DataLoader(Faces(), batch_size=64, num_workers=0, pin_memory=DEVICE.type == 'cuda'):
+            with torch.autocast(device_type=DEVICE.type, dtype=torch.float16, enabled=DEVICE.type == 'cuda'):
+                feature = clip.visual_projection(clip.vision_model(pixel_values=pixels.to(DEVICE, non_blocking=True)).pooler_output)
+            features.append(torch.nn.functional.normalize(feature.float(), dim=-1))
+    features = torch.cat(features)
+    labels = torch.tensor([s['label'] for s in samples], device=DEVICE)
+    x_train, y_train = features[train_ids].clone(), labels[train_ids]
+    mlp = torch.nn.Sequential(torch.nn.Linear(features.shape[1], HIDDEN_DIM), torch.nn.ReLU(), torch.nn.Linear(HIDDEN_DIM, 3)).to(DEVICE)
     optimizer = torch.optim.AdamW(mlp.parameters(), lr=LEARNING_RATE)
-    criterion = nn.CrossEntropyLoss()
     mlp.train()
     for epoch in range(EPOCHS):
         optimizer.zero_grad(set_to_none=True)
-        loss = criterion(mlp(x_train), y_train)
+        loss = torch.nn.functional.cross_entropy(mlp(x_train), y_train)
         loss.backward()
         optimizer.step()
-        if (epoch + 1) % 20 == 0 or epoch + 1 == EPOCHS:
-            print(f"{epoch + 1:03d}/{EPOCHS} | train_loss={loss.item():.4f}")
+        if (epoch + 1) % 20 == 0: print(f'epoch={epoch+1}/{EPOCHS} loss={loss.item():.4f}')
     mlp.eval()
     with torch.inference_mode():
-        probabilities = mlp(features[test_index]).float().softmax(1).cpu().numpy()
-    metrics, records = evaluate_predictions(samples, test_ids, probabilities)
-    metrics.update({"classes": list(CLASSES), "train_size": len(train_ids), "source_images": len(data["images"]), "eligible_images": len(samples),
-                    "excluded_images": len(excluded), "seed": SEED})
-    checkpoint = ROOT / "ckpt/phase3a_train/clip_mlp_3class_2.pt"
-    checkpoint.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"state_dict": mlp.state_dict(), "classes": list(CLASSES), "backbone": BACKBONE,
-                "feature_dim": features.shape[1], "hidden_dim": HIDDEN_DIM, "normalize_features": True,
-                "face_expand": FACE_EXPAND, "face_threshold": FACE_THRESHOLD, "seed": SEED}, checkpoint)
-    write_csv(output / "predictions.csv", records, list(records[0]))
-    plot_confusion(metrics["confusion_matrix"], output / "confusion_matrix.png")
-    metrics["misclassified_plots"] = plot_errors(ROOT, data, records, output)
-    (output / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"test_acc={metrics['test_accuracy']:.3f} | conflicts={metrics['presence_conflicts']} | "
-          f"missing_bbox={metrics['missing_glasses_bbox']} | review={metrics['review_count']}")
-    print("결과:", output)
-    print("체크포인트:", checkpoint)
+        pred = mlp(features[test_ids]).argmax(1)
+        cm = torch.bincount(labels[test_ids] * 3 + pred, minlength=9).reshape(3, 3).cpu()
+    print('train/test:', len(train_ids), len(test_ids), 'accuracy:', cm.diag().sum().item()/len(test_ids), 'confusion:', cm.tolist())
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.imshow(cm.numpy(), cmap='Blues')
+    for i in range(3):
+        for j in range(3):
+            ax.text(j, i, str(cm[i, j].item()), ha='center', va='center', color='white' if cm[i, j] > cm.max()/2 else 'black')
+    ax.set(xticks=range(3), yticks=range(3), xticklabels=CLASSES, yticklabels=CLASSES, xlabel='Predicted', ylabel='Actual', title=f'Test accuracy: {cm.diag().sum().item()/len(test_ids):.2%}')
+    plt.setp(ax.get_xticklabels(), rotation=20, ha='right')
+    fig.tight_layout()
+    plt.show()
+
+    torch.save({'state_dict': {k:v.detach().cpu() for k,v in mlp.state_dict().items()}, 'classes': list(CLASSES),
+                'backbone': BACKBONE, 'feature_dim': features.shape[1], 'hidden_dim': HIDDEN_DIM, 'normalize_features': True,
+                'face_expand': FACE_EXPAND, 'face_threshold': FACE_THRESHOLD, 'seed': SEED,
+                'epochs': EPOCHS, 'learning_rate': LEARNING_RATE, 'train_files': [samples[i]['file_name'] for i in train_ids],
+                'test_files': [samples[i]['file_name'] for i in test_ids], 'confusion_matrix': cm.tolist()}, MLP_WEIGHTS)
+    print("체크포인트:", MLP_WEIGHTS)
 
 
 if __name__ == "__main__":

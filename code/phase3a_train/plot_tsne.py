@@ -29,7 +29,7 @@ def main():
     cv2.setNumThreads(1)
     paths = [(path, label) for label in train.CLASSES for path in sorted((ROOT / "data/images" / label).glob("*.jpg"))]
     print("Image snapshot:", {label: sum(c == label for _, c in paths) for label in train.CLASSES}, flush=True)
-    checkpoint = ROOT / "ckpt/phase3a_train/clip_mlp_3class_2.pt"
+    checkpoint = ROOT / "ckpt/phase3a_train/clip_mlp_3class.pt"
     state = torch.load(checkpoint, map_location="cpu", weights_only=True)
     assert state["classes"] == list(train.CLASSES)
     train.FACE_EXPAND = state["face_expand"]

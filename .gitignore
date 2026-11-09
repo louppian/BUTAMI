@@ -39,7 +39,7 @@ __pycache__/
 
 
 # Current main retraining artifacts
-!/ckpt/phase3a_train/clip_mlp_3class_2.pt
+!/ckpt/phase3a_train/clip_mlp_3class.pt
 !/data/annotations/face_glasses.json
 !/results/phase3b_video_check/temp_detr.mp4
 !/results/phase3a_train/results.md

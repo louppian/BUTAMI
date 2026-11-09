@@ -9,44 +9,53 @@
 ![BUTAMI 후속 검출기·증류 학습 연결도](phase_flow.png)
 
 - **현재 이미지 경로:** `1a → 2a → 3a` — 사람 이미지 수집 → 얼굴·안경 bbox·확률·얼굴 선택 → CLIP 특징·3-class MLP 학습·평가.
-- **영상 경로:** `1b → 2b → 3b` — 영상 수집 → 얼굴·안경 검출·특징 추출 → 일반/스마트 분류 결과 표시.
-- **모델 전달:** `2a → 2b`는 학습한 검출기·특징 추출기를, `3a → 3b`는 학습한 MLP를 전달한다.
+- **현재 영상 경로:** `data/videos/` → 사전학습 RT-DETRv4 사람 검출 → YuNet 얼굴 → 얼굴 주변 1.8배 crop → 고정 CLIP + 메인 MLP → bbox·분류 표시.
+- **현재 모델 전달:** `3a → 3b`에 `clip_mlp_3class.pt`를 전달한다. `1b → 2b → 3b` 및 `2a → 2b`의 학습한 검출기·ROI 특징 연결은 후속 계획이다.
 
 ## 폴더 구조
 
 ```text
 BUTAMI/
 ├── code/
-│   ├── phase1a_images/                 # 이미지 수집·검수
-│   ├── phase1b_videos/                 # 영상 수집
-│   ├── phase2a_extract/                # 이미지 얼굴·안경 bbox·crop
-│   │   └── bbox/
-│   ├── phase2b_video_check/            # 영상 검출·특징 추출 단계
-│   ├── phase3a_train/                  # MLP 학습·평가
-│   │   ├── retrain.ipynb               # 메인 한 셀: bbox → 학습 → 영상
-│   │   ├── train_mlp.py                # 기존 학습·평가 보조 코드
+│   ├── phase1a_images/                 # 이미지 수집·필터·검수
+│   ├── phase1b_videos/                 # .gitkeep
+│   ├── phase2a_extract/
+│   │   ├── crop_images.py
+│   │   └── bbox/                      # extract_bbox.py, review_bbox.ipynb
+│   ├── phase2b_video_check/            # .gitkeep
+│   ├── phase3a_train/
+│   │   ├── retrain.ipynb               # bbox → 학습 → 영상 한 셀 실행
+│   │   ├── train_mlp.py                # bbox → 학습 → confusion matrix·가중치 저장
 │   │   └── plot_tsne.py
 │   └── phase3b_video_check/
-│       └── run_video.ipynb             # 현재 MLP로 영상 추론
+│       ├── run_video.ipynb             # temp.mp4 영상 추론
+│       └── test.py                     # CLI 영상 경로 하나 → tests/<입력 파일명>
 ├── data/
 │   ├── images/{no_glasses,regular_glasses,smart_glasses}/
-│   ├── videos/temp.mp4
-│   └── annotations/face_glasses.json   # 현재 메인 bbox
+│   ├── images_glasses_only/{no_glasses,regular_glasses,smart_glasses}/
+│   ├── crop_images/
+│   ├── annotations/                   # face_glasses.json, images/
+│   └── videos/temp.mp4
 ├── results/
-│   ├── phase1a_images/
+│   ├── phase1a_images/                 # 수집 기록·검수·재수집 자료
 │   ├── phase1b_videos/
-│   ├── phase2a_extract/
+│   ├── phase2a_extract/                # bbox/, crop_images.csv, crop_review.png
 │   ├── phase2b_video_check/
-│   ├── phase3a_train/                  # 평가·t-SNE 결과
-│   └── phase3b_video_check/temp_detr.mp4
+│   ├── phase3a_train/                  # clip_mlp/, face_only/, t-SNE·작업 기록
+│   ├── phase3b_video_check/temp_detr.mp4
+│   └── tmp78mlxwl5/                    # 로컬 임시 결과
 ├── ckpt/
 │   ├── pretrained/
-│   ├── phase2a_extract/                # 후속 검출기 학습용
-│   └── phase3a_train/clip_mlp_3class_2.pt
-├── examples/archive/                  # 이전 예제·실행 노트북
-├── tests/
-└── third_party/
+│   ├── phase2a_extract/                # .gitkeep
+│   └── phase3a_train/                  # clip_mlp_3class.pt (메인), clip_linear.pt, old.pt
+├── examples/                          # archive/, retrain/, 예시 이미지·영상
+├── tests/                             # test_image_pipeline.py, CLI 출력 영상
+├── third_party/                       # AutoCrawler, dinov3, glasses-detector, RT-DETRv4
+├── README.md
+└── phase_flow.png
 ```
+
+현재 로컬 폴더 기준이며 Python 캐시와 Git 내부 파일은 생략했다. 데이터·사전학습 가중치·실행 결과의 Git 포함 범위는 `.gitignore`를 따른다.
 
 
 | 폴더 | 관리 대상 |
@@ -57,8 +66,9 @@ BUTAMI/
 | `ckpt/` | 사전학습 가중치와 학습한 체크포인트 |
 | `third_party/` | 외부 소스와 원본 라이선스 |
 | `examples/` | 참고 예시 |
+| `tests/` | 단위 테스트와 `test.py`의 영상 출력 |
 
-`code/`와 `results/` 아래의 단계 및 작업 폴더는 같은 상대 경로로 1:1 대응한다. 원본과 bbox 주석은 `data/`, 가중치는 `ckpt/`에 저장한다. `results.md`에는 해당 작업의 입력부터 출력까지의 흐름을 기록한다.
+`code/`와 `results/`는 단계별로 나눈다. `test.py`의 영상 출력은 `tests/`에 저장한다. 원본과 bbox 주석은 `data/`, 가중치는 `ckpt/`에 저장한다. `results.md`에는 해당 작업의 입력부터 출력까지의 흐름을 기록한다.
 
 ## Phase 1. 데이터 수집
 
@@ -144,19 +154,19 @@ BUTAMI/
 
 ### 3a. MLP 학습·평가
 
-메인 실행은 `code/phase3a_train/retrain.ipynb`의 한 셀이다. bbox 생성·8:2 분할·MLP 학습·confusion matrix 출력·3b 영상 추론을 순서대로 실행한다. `train_mlp.py`는 기존 개별 학습·평가 함수와 t-SNE의 보조 코드다.
+메인 실행은 `code/phase3a_train/retrain.ipynb`의 한 셀이다. bbox 생성·8:2 분할·MLP 학습·confusion matrix 출력·3b 영상 추론을 순서대로 실행한다. `train_mlp.py`는 같은 bbox 생성·분할·CLIP 특징 추출·MLP 학습을 실행하고 confusion matrix를 표시한 뒤 동일한 형식의 메인 가중치를 저장한다. 영상 추론은 `test.py` 또는 `run_video.ipynb`에서 실행한다.
 
 **메인 코드:** `code/phase3a_train/retrain.ipynb`
 
-**메인 가중치:** `ckpt/phase3a_train/clip_mlp_3class_2.pt`
+**메인 가중치:** `ckpt/phase3a_train/clip_mlp_3class.pt`
 
 - 현재 이미지 1,500장에서 bbox를 생성하고 여러 얼굴 이미지 16장을 제외한다.
 - 얼굴 주변 1.8배 crop → 고정 CLIP ViT-B/32 → 정규화된 512차원 특징 → MLP 512→128→3.
 - seed 42, 클래스별 8:2 분할(train 1,186 / test 298), AdamW, 100 epoch.
-- 테스트 정확도 95.3020%, confusion matrix `[[96,3,1],[0,96,2],[0,8,92]]`를 셀에 출력한다.
+- 현재 메인 가중치에 저장된 평가: 284/298 정답, 정확도 95.3020%, confusion matrix `[[96,3,1],[0,96,2],[0,8,92]]`. 행은 실제 클래스, 열은 예측 클래스이며 순서는 미착용·일반 안경·스마트글래스다.
 - bbox는 `data/annotations/face_glasses.json`, 영상은 `results/phase3b_video_check/temp_detr.mp4`에 저장한다.
 - 3b 영상추론과 `plot_tsne.py`는 이 메인 가중치 및 저장된 crop 설정을 사용한다.
-- `train_mlp.py`는 개별 학습·평가와 t-SNE의 보조 함수 코드다.
+- `train_mlp.py`는 bbox를 다시 생성하고 메인 가중치를 저장한다. 체크포인트에는 학습 설정, train/test 파일 목록, confusion matrix를 포함한다.
 
 #### 후속 계획: 일반/스마트 teacher·student 학습과 증류
 
@@ -176,7 +186,18 @@ BUTAMI/
 
 ### 3b. 영상 추론·결과 확인
 
-현재 실행: `code/phase3b_video_check/run_video.ipynb` 한 셀. `data/videos/temp.mp4`를 읽고 현재 메인 가중치 `ckpt/phase3a_train/clip_mlp_3class_2.pt`로 추론해 `results/phase3b_video_check/temp_detr.mp4`에 저장한다.
+**CLI 실행:** `torch_ev` 환경에서 영상 경로 하나를 전달한다.
+
+```powershell
+conda activate torch_ev
+python D:\BUTAMI\code\phase3b_video_check\test.py data/videos/temp.mp4
+```
+
+상대 경로는 프로젝트 루트 기준이고 절대 경로도 받는다. 출력은 `D:\BUTAMI\tests\temp.mp4`처럼 `tests/` 아래에 입력 파일명 그대로 저장한다. 같은 이름의 출력 파일은 실행 시 갱신된다. 원본 해상도·FPS를 사용하며 OpenCV로 영상 프레임을 저장한다.
+
+검증 영상 `temp.mp4`: 입력·출력 3,404프레임, 640×360, 약 29.97 FPS. CUDA 환경에서 추론·저장 86.77초, 저장 영상 전체 프레임 디코딩과 bbox·분류 표시를 확인했다.
+
+현재 실행: `code/phase3b_video_check/run_video.ipynb` 한 셀. `data/videos/temp.mp4`를 읽고 현재 메인 가중치 `ckpt/phase3a_train/clip_mlp_3class.pt`로 추론해 `results/phase3b_video_check/temp_detr.mp4`에 저장한다.
 
 현재 연결은 사전학습 RT-DETRv4 사람 검출 → YuNet 얼굴 → 1.8배 얼굴 crop → 고정 CLIP + 3-class MLP이며, GlassesExtractor로 안경 박스를 표시한다. 아래 ROI 특징 기반 연결은 후속 계획이다.
 
@@ -201,7 +222,7 @@ BUTAMI/
 | RT-DETRv4-S | 2a → 2b | 이미지·프레임 → 안경 bbox·HybridEncoder 특징맵 |
 | ROI pooling | 2a → 3a / 2b → 3b | 특징맵 + bbox → 안경별 고정 길이 특징 |
 | YuNet | 2a / 2b | 사람 이미지·영상 프레임 → 얼굴 bbox·주변 영역 |
-| CLIP + MLP 3-class | 현재 3a | 선택된 얼굴 주변 crop → 세 클래스 확률·판정 충돌 기록 |
+| CLIP + MLP 3-class | 현재 3a | 선택된 얼굴 주변 crop → 세 클래스 확률·confusion matrix |
 | CLIP + 분류 헤드 | 후속 3a | 원본 안경 crop → 일반/스마트 예측 분포 → MLP 증류 |
 | MLP | 3a → 3b | ROI 특징 → 일반/스마트 점수·판정 |
 
@@ -213,7 +234,7 @@ CLIP의 이미지 선별과 종류 분류는 각각 별도의 역할이다. DINO
 | --- | --- |
 | `ckpt/pretrained/` | GlassesSegmenter·YuNet·CLIP·RT-DETRv4·DINOv3 사전학습 가중치 |
 | `ckpt/phase2a_extract/` | 학습한 안경 검출기와 특징 정렬 모듈 |
-| `ckpt/phase3a_train/` | 메인 `clip_mlp_3class_2.pt` |
+| `ckpt/phase3a_train/` | 메인 `clip_mlp_3class.pt` |
 | `ckpt/phase3a_train/distillation/` | 후속 CLIP teacher·MLP student |
 
 YuNet은 `ckpt/pretrained/face_detection_yunet_2023mar.onnx`, 안경 분할 가중치는 `ckpt/pretrained/segmentation_full_lraspp_mobilenet_v3_large.pth`, CLIP 캐시는 `ckpt/pretrained/clip/`에 둔다. 안경 착용 분류기는 `ckpt/pretrained/torch/checkpoints/classification_anyglasses_shufflenet_v2_x1_0.pth`를 사용한다. 추출기는 없는 YuNet·안경 분류·분할 가중치를 공식 배포 URL에서 다운로드하고 로컬 파일을 재사용한다.
@@ -226,7 +247,7 @@ Python 3.12 환경에서 수집 코드에 필요한 `ddgs`, `requests`, `Pillow`
 2. 이미지 종류·착용 상태 검수.
 3. IDE에서 `code/phase2a_extract/bbox/extract_bbox.py` 실행 → 얼굴 점수·안경 착용 확률을 포함한 COCO JSON 저장. 기존 JSON도 다시 추출해 갱신한다.
 4. `code/phase2a_extract/bbox/review_bbox.ipynb`에서 원본 라벨과 주대상 얼굴을 검수한다. 검수한 얼굴은 `selected_face_id`에 지정하고, 검수 대기 이미지는 `null`을 유지한다.
-5. 메인 `code/phase3a_train/retrain.ipynb` 한 셀 실행 → 현재 bbox·MLP 가중치·영상 저장 및 셀에 confusion matrix 출력. 영상만 다시 실행할 때는 `code/phase3b_video_check/run_video.ipynb`를 사용한다.
+5. 메인 `code/phase3a_train/retrain.ipynb` 한 셀 실행 → 현재 bbox·MLP 가중치·영상 저장 및 셀에 confusion matrix 출력. 학습만 실행할 때는 `code/phase3a_train/train_mlp.py`, 영상만 실행할 때는 `code/phase3b_video_check/test.py <영상 경로>` 또는 `run_video.ipynb`를 사용한다.
 
 `tests/test_image_pipeline.py`는 외부 검색·모델을 대체해 세 클래스 수집·중복 제거·이어받기, bbox 원본 좌표 복원, 빈 마스크, 여러 얼굴, 주대상 얼굴 선택·검수, COCO 저장, 학습 라벨·원래 예측 보존, 충돌 기록, 오분류 박스 표시를 검사한다. 저장소 루트에서 `python -X utf8 -m unittest discover -s tests -v`로 실행한다. 실제 수집 수량과 모델 추론 품질은 실행 환경에서 확인한다.
 

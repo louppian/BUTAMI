@@ -146,25 +146,17 @@ BUTAMI/
 
 메인 실행은 `code/phase3a_train/retrain.ipynb`의 한 셀이다. bbox 생성·8:2 분할·MLP 학습·confusion matrix 출력·3b 영상 추론을 순서대로 실행한다. `train_mlp.py`는 기존 개별 학습·평가 함수와 t-SNE의 보조 코드다.
 
-**2a의 선택된 얼굴 → 얼굴 주변 crop → 고정 CLIP 특징 → 3-class MLP → 원래 예측·검출 상태 대조**
+**메인 코드:** `code/phase3a_train/retrain.ipynb`
 
-기존 보조 코드 `code/phase3a_train/train_mlp.py`의 처리 범위:
+**메인 가중치:** `ckpt/phase3a_train/clip_mlp_3class_2.pt`
 
-- `selected_face_id`가 지정되고 탐지 점수 0.5 초과인 얼굴 하나를 이미지별로 사용한다. 얼굴 선택 검수 대상은 제외 이유를 CSV로 기록한다.
-- 원본 폴더의 미착용·일반 안경·스마트글래스 라벨을 그대로 사용한다.
-- 얼굴 주변 1.8배 crop의 CLIP 특징을 한 번 추출하고 `feature_dim → 128 → 3` MLP를 학습한다.
-- 클래스별 이미지 단위 80:20 분리, seed 42, 100 epoch를 기본으로 사용한다.
-- MLP의 원래 세 클래스 softmax로 전체 테스트 정확도와 혼동행렬을 계산한다.
-- 안경 착용 확률과 MLP의 착용 여부가 충돌하면 원래 예측·확률을 보존하고 `final_class=review`를 기록한다. 높은 착용 확률에서 bbox가 누락된 경우도 별도 집계한다.
-- 오분류 그림에는 선택된 얼굴과 해당 안경 bbox·점수, 원래 MLP 예측·확률, 최종 상태를 함께 표시한다.
-
-**코드:** `code/phase3a_train/train_mlp.py`
-
-**결과:** `results/phase3a_train/`의 `metrics.json`, `predictions.csv`, `excluded_images.csv`, `confusion_matrix.png`, `misclassified_*.png`
-
-**체크포인트:** `ckpt/phase3a_train/clip_mlp_3class.pt`
-
-현재 메인 가중치는 `ckpt/phase3a_train/clip_mlp_3class_2.pt`이며, 기존 `clip_mlp_3class.pt`는 이전 학습 결과다.
+- 현재 이미지 1,500장에서 bbox를 생성하고 여러 얼굴 이미지 16장을 제외한다.
+- 얼굴 주변 1.8배 crop → 고정 CLIP ViT-B/32 → 정규화된 512차원 특징 → MLP 512→128→3.
+- seed 42, 클래스별 8:2 분할(train 1,186 / test 298), AdamW, 100 epoch.
+- 테스트 정확도 95.3020%, confusion matrix `[[96,3,1],[0,96,2],[0,8,92]]`를 셀에 출력한다.
+- bbox는 `data/annotations/face_glasses.json`, 영상은 `results/phase3b_video_check/temp_detr.mp4`에 저장한다.
+- 3b 영상추론과 `plot_tsne.py`는 이 메인 가중치 및 저장된 crop 설정을 사용한다.
+- `train_mlp.py`는 개별 학습·평가와 t-SNE의 보조 함수 코드다.
 
 #### 후속 계획: 일반/스마트 teacher·student 학습과 증류
 
@@ -221,7 +213,7 @@ CLIP의 이미지 선별과 종류 분류는 각각 별도의 역할이다. DINO
 | --- | --- |
 | `ckpt/pretrained/` | GlassesSegmenter·YuNet·CLIP·RT-DETRv4·DINOv3 사전학습 가중치 |
 | `ckpt/phase2a_extract/` | 학습한 안경 검출기와 특징 정렬 모듈 |
-| `ckpt/phase3a_train/` | 현재 `clip_mlp_3class_2.pt`, 이전 `clip_mlp_3class.pt` |
+| `ckpt/phase3a_train/` | 메인 `clip_mlp_3class_2.pt` |
 | `ckpt/phase3a_train/distillation/` | 후속 CLIP teacher·MLP student |
 
 YuNet은 `ckpt/pretrained/face_detection_yunet_2023mar.onnx`, 안경 분할 가중치는 `ckpt/pretrained/segmentation_full_lraspp_mobilenet_v3_large.pth`, CLIP 캐시는 `ckpt/pretrained/clip/`에 둔다. 안경 착용 분류기는 `ckpt/pretrained/torch/checkpoints/classification_anyglasses_shufflenet_v2_x1_0.pth`를 사용한다. 추출기는 없는 YuNet·안경 분류·분할 가중치를 공식 배포 URL에서 다운로드하고 로컬 파일을 재사용한다.

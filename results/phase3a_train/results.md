@@ -57,7 +57,7 @@ bbox가 없는 사진도 MLP의 원래 예측을 평가한다. 테스트 정확�
 
 | 경로 | 내용 |
 | --- | --- |
-| `ckpt/phase3a_train/clip_mlp_3class.pt` | MLP 가중치, 클래스 순서, backbone·특징 차원·crop 설정 |
+| `ckpt/phase3a_train/clip_mlp_3class_2.pt` | MLP 가중치, 클래스 순서, backbone·특징 차원·crop 설정 |
 | `results/phase3a_train/metrics.json` | 원래 MLP 정확도·혼동행렬, 선택/제외 수, 충돌·bbox 누락·보류 수 |
 | `results/phase3a_train/predictions.csv` | 원본 경로·얼굴 ID·정답·원래 예측·세 확률·착용 확률·최종 상태 |
 | `results/phase3a_train/excluded_images.csv` | 얼굴 선택 조건에서 제외된 이미지와 이유 |

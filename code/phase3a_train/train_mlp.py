@@ -243,7 +243,7 @@ def main():
     metrics, records = evaluate_predictions(samples, test_ids, probabilities)
     metrics.update({"classes": list(CLASSES), "train_size": len(train_ids), "source_images": len(data["images"]), "eligible_images": len(samples),
                     "excluded_images": len(excluded), "seed": SEED})
-    checkpoint = ROOT / "ckpt/phase3a_train/clip_mlp_3class.pt"
+    checkpoint = ROOT / "ckpt/phase3a_train/clip_mlp_3class_2.pt"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     torch.save({"state_dict": mlp.state_dict(), "classes": list(CLASSES), "backbone": BACKBONE,
                 "feature_dim": features.shape[1], "hidden_dim": HIDDEN_DIM, "normalize_features": True,

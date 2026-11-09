@@ -29,16 +29,31 @@ def main(video):
     BATCH_SIZE = 8
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     assert SOURCE.is_file(), SOURCE
-    assert WEIGHTS.is_file(), WEIGHTS
-    assert FACE_WEIGHTS.is_file(), FACE_WEIGHTS
+    MLP_WEIGHTS = ROOT / 'ckpt/phase3a_train/clip_mlp_3class.pt'
+    if not MLP_WEIGHTS.is_file():
+        raise FileNotFoundError(f'메인 가중치를 준비해 주세요: {MLP_WEIGHTS}')
+    sys.path.insert(0, str(ROOT / 'code/phase2a_extract/bbox'))
+    from extract_bbox import GlassesExtractor, project_box, ensure_weights, YUNET_URL
+    ensure_weights(FACE_WEIGHTS, YUNET_URL)
+    if not WEIGHTS.is_file():
+        import gdown
+        WEIGHTS.parent.mkdir(parents=True, exist_ok=True)
+        temporary = WEIGHTS.with_suffix('.pth.tmp')
+        try:
+            # RT-DETRv4 공식 README의 RT-DETRv4-S 체크포인트.
+            if gdown.download(id='1jDAVxblqRPEWed7Hxm6GwcEl7zn72U6z', output=str(temporary)) is None:
+                raise RuntimeError('RT-DETRv4-S 가중치 다운로드를 확인해 주세요.')
+            if temporary.stat().st_size <= 100_000:
+                raise ValueError('RT-DETRv4-S 다운로드 파일의 크기를 확인해 주세요.')
+            temporary.replace(WEIGHTS)
+        finally:
+            temporary.unlink(missing_ok=True)
     sys.path.insert(0, str(ROOT / 'third_party/RT-DETRv4'))
     from engine.core import YAMLConfig
     from engine.data.dataset.coco_dataset import mscoco_category2name
 
     print(f'{DEVICE=} | {WEIGHTS.name}: {WEIGHTS.stat().st_size:,} bytes')
 
-    sys.path.insert(0, str(ROOT / 'code/phase2a_extract/bbox'))
-    from extract_bbox import GlassesExtractor, project_box
     from transformers import CLIPModel, CLIPProcessor
     import math
 
@@ -64,13 +79,18 @@ def main(video):
     PERSON = classes.index('person')
     face_detector = cv2.FaceDetectorYN.create(str(FACE_WEIGHTS), '', (320, 320), FACE_THRESHOLD, 0.3, 5000)
 
-    MLP_WEIGHTS = ROOT / 'ckpt/phase3a_train/clip_mlp_3class.pt'
     checkpoint = torch.load(MLP_WEIGHTS, map_location='cpu', weights_only=True)
     assert checkpoint['classes'] == ['no_glasses', 'regular_glasses', 'smart_glasses']
     mlp = torch.nn.Sequential(torch.nn.Linear(checkpoint['feature_dim'], checkpoint['hidden_dim']), torch.nn.ReLU(), torch.nn.Linear(checkpoint['hidden_dim'], 3)).to(DEVICE).eval()
     mlp.load_state_dict(checkpoint['state_dict'])
-    processor = CLIPProcessor.from_pretrained(checkpoint['backbone'], cache_dir=str(ROOT / 'ckpt/pretrained/clip'), local_files_only=True)
-    clip = CLIPModel.from_pretrained(checkpoint['backbone'], cache_dir=str(ROOT / 'ckpt/pretrained/clip'), local_files_only=True).to(DEVICE).eval()
+    def load_clip(cls):
+        try:
+            return cls.from_pretrained(checkpoint['backbone'], cache_dir=str(ROOT / 'ckpt/pretrained/clip'), local_files_only=True)
+        except OSError:
+            return cls.from_pretrained(checkpoint['backbone'], cache_dir=str(ROOT / 'ckpt/pretrained/clip'))
+
+    processor = load_clip(CLIPProcessor)
+    clip = load_clip(CLIPModel).to(DEVICE).eval()
     FACE_EXPAND = checkpoint['face_expand']
     NORMALIZE = checkpoint['normalize_features']
     glasses = GlassesExtractor(ROOT)

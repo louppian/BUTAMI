@@ -188,6 +188,8 @@ BUTAMI/
 
 **CLI 실행:** `torch_ev` 환경에서 영상 경로 하나를 전달한다.
 
+`clip_mlp_3class.pt`는 로컬에 준비한다. 나머지 RT-DETRv4-S·YuNet·CLIP·안경 분류/분할 가중치는 로컬 파일을 재사용하고, 누락된 파일은 실행 중 다운로드한다. 첫 다운로드에는 인터넷 연결이 필요하며 RT-DETRv4-S의 Google Drive 다운로드에는 `gdown` 패키지(`pip install gdown`)를 사용한다.
+
 ```powershell
 conda activate torch_ev
 python D:\BUTAMI\code\phase3b_video_check\test.py data/videos/temp.mp4

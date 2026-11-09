@@ -3,6 +3,48 @@
 import argparse
 
 
+class YuNet:
+    """동일한 YuNet ONNX 가중치를 PyTorch 장치에서 실행한다."""
+    def __init__(self, path, device, threshold=0.5):
+        import onnx
+        from onnx2torch import convert
+        self.device, self.threshold = device, threshold
+        graph = onnx.load(str(path))
+        self.names = [output.name for output in graph.graph.output]
+        self.model = convert(graph).to(device).eval().requires_grad_(False)
+        # Reshape/Resize의 고정 크기 상수는 CPU에 유지해 매 호출 장치 동기화를 줄인다.
+        self.model.initializers.cpu()
+        print(f'YuNet: {next(self.model.parameters()).device} (PyTorch)', flush=True)
+
+    def detect(self, image):
+        import torch
+        from torchvision.ops import nms
+        with torch.inference_mode():
+            pixels = torch.as_tensor(image, device=self.device).permute(2, 0, 1).unsqueeze(0).float()
+            pixels = torch.nn.functional.pad(pixels, (0, -image.shape[1] % 32, 0, -image.shape[0] % 32))
+            outputs = dict(zip(self.names, self.model(pixels)))
+            faces = []
+            # OpenCV YuNet의 bbox·landmark·score 복원 규칙:
+            # https://github.com/opencv/opencv/blob/4.x/modules/objdetect/src/face_detect.cpp
+            for stride in (8, 16, 32):
+                y, x = torch.meshgrid(torch.arange(pixels.shape[2] // stride, device=self.device),
+                                      torch.arange(pixels.shape[3] // stride, device=self.device), indexing='ij')
+                grid = torch.stack((x, y), -1).reshape(-1, 2)
+                box = outputs[f'bbox_{stride}'][0]
+                size = box[:, 2:].exp() * stride
+                corner = (box[:, :2] + grid) * stride - size / 2
+                landmarks = (outputs[f'kps_{stride}'][0].reshape(-1, 5, 2) + grid[:, None]) * stride
+                score = (outputs[f'cls_{stride}'][0].clamp(0, 1) * outputs[f'obj_{stride}'][0].clamp(0, 1)).sqrt()
+                faces.append(torch.cat((corner, size, landmarks.flatten(1), score), 1))
+            faces = torch.cat(faces)
+            faces = faces[torch.isfinite(faces).all(1) & (faces[:, -1] >= self.threshold) & (faces[:, 2:4] > 0).all(1)]
+            faces = faces[faces[:, -1].argsort(descending=True)[:5000]]
+            boxes = faces[:, :4].trunc()
+            boxes = torch.cat((boxes[:, :2], boxes[:, :2] + boxes[:, 2:]), 1)
+            faces = faces[nms(boxes, faces[:, -1], 0.3)]
+            return faces.cpu().numpy()
+
+
 def main(video):
     from pathlib import Path
     from time import perf_counter
@@ -77,7 +119,7 @@ def main(video):
     del checkpoint
 
     PERSON = classes.index('person')
-    face_detector = cv2.FaceDetectorYN.create(str(FACE_WEIGHTS), '', (320, 320), FACE_THRESHOLD, 0.3, 5000)
+    face_detector = YuNet(FACE_WEIGHTS, DEVICE, FACE_THRESHOLD)
 
     checkpoint = torch.load(MLP_WEIGHTS, map_location='cpu', weights_only=True)
     assert checkpoint['classes'] == ['no_glasses', 'regular_glasses', 'smart_glasses']
@@ -130,7 +172,7 @@ def main(video):
                 images = torch.stack([transform(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))) for frame in frames]).to(DEVICE)
                 labels, boxes, scores = postprocessor(model(images), sizes[:len(frames)])
                 detections = torch.cat((boxes, labels.unsqueeze(-1), scores.unsqueeze(-1)), -1).cpu().numpy()
-                people = [rows[(rows[:, 4] == PERSON) & (rows[:, 5] >= THRESHOLD)] for rows in detections]
+                people = [rows[np.isfinite(rows).all(axis=1) & (rows[:, 4] == PERSON) & (rows[:, 5] >= THRESHOLD)] for rows in detections]
                 faces, crops = [], []
                 # 원본에서 얼굴과 1.8배 crop을 수집한 뒤 배치 추론합니다.
                 for i, (frame, rows) in enumerate(zip(frames, people)):
@@ -139,14 +181,15 @@ def main(video):
                         y1, y2 = np.clip([np.floor(y1), np.ceil(y2)], 0, height).astype(int)
                         if x2 - x1 < 16 or y2 - y1 < 16:
                             continue
-                        face_detector.setInputSize((x2 - x1, y2 - y1))
-                        _, found = face_detector.detect(np.ascontiguousarray(frame[y1:y2, x1:x2]))
+                        found = face_detector.detect(np.ascontiguousarray(frame[y1:y2, x1:x2]))
                         if found is None:
                             continue
                         for face in found:
-                            if face[-1] < FACE_THRESHOLD:
+                            if not np.isfinite(face).all() or face[-1] < FACE_THRESHOLD:
                                 continue
-                            fx, fy, fw, fh = face[:4]
+                            fx, fy, fw, fh = map(float, face[:4])
+                            if fw <= 0 or fh <= 0:
+                                continue
                             fx1, fy1 = max(x1, math.floor(x1 + fx)), max(y1, math.floor(y1 + fy))
                             fx2, fy2 = min(x2, math.ceil(x1 + fx + fw)), min(y2, math.ceil(y1 + fy + fh))
                             if fx2 <= fx1 or fy2 <= fy1:

@@ -41,7 +41,7 @@ with patch.dict("sys.modules", {
 }):
     crawl = load("crawl", "code/phase1a_images/image_crawl.py")
 bbox = load("bbox", "code/phase2a_extract/bbox/extract_bbox.py")
-train = load("train", "code/phase3a_train/clip_mlp/train_mlp.py")
+train = load("train", "code/phase3a_train/train_mlp.py")
 recollect = load("recollect", "code/phase1a_images/recollect_images.py")
 
 

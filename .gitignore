@@ -15,7 +15,6 @@
 !/results/**/.gitkeep
 !/results/phase1a_images/results.md
 !/results/phase2a_extract/bbox/results.md
-!/results/phase3a_train/clip_mlp/results.md
 /ckpt/**
 !/ckpt/**/
 !/ckpt/**/.gitkeep
@@ -38,3 +37,9 @@ __pycache__/
 *.pem
 *.key
 
+
+# Current main retraining artifacts
+!/ckpt/phase3a_train/clip_mlp_3class_2.pt
+!/data/annotations/face_glasses.json
+!/results/phase3b_video_check/temp_detr.mp4
+!/results/phase3a_train/results.md

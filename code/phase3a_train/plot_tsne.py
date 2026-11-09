@@ -17,11 +17,11 @@ from transformers import CLIPModel, CLIPProcessor
 
 import train_mlp as train
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "code/phase2a_extract/bbox"))
 import extract_bbox as bbox
 
-OUTPUT = ROOT / "results/phase3a_train/clip_mlp/face_only"
+OUTPUT = ROOT / "results/phase3a_train/face_only"
 BATCH_SIZE = 32
 
 
@@ -29,9 +29,7 @@ def main():
     cv2.setNumThreads(1)
     paths = [(path, label) for label in train.CLASSES for path in sorted((ROOT / "data/images" / label).glob("*.jpg"))]
     print("Image snapshot:", {label: sum(c == label for _, c in paths) for label in train.CLASSES}, flush=True)
-    checkpoint = ROOT / "ckpt/phase3a_train/clip_mlp/clip_mlp_3class.pt"
-    if not checkpoint.is_file():
-        checkpoint = ROOT / "ckpt/phase3a_train/clip_mlp_3class.pt"
+    checkpoint = ROOT / "ckpt/phase3a_train/clip_mlp_3class.pt"
     state = torch.load(checkpoint, map_location="cpu", weights_only=True)
     assert state["classes"] == list(train.CLASSES)
     train.FACE_EXPAND = 1.0

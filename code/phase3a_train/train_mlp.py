@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageOps
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 CLASSES = ("no_glasses", "regular_glasses", "smart_glasses")
 BACKBONE = "openai/clip-vit-base-patch32"
 FACE_THRESHOLD = 0.5
@@ -216,7 +216,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     data = json.loads((ROOT / "data/annotations/face_glasses.json").read_text(encoding="utf-8"))
     samples, excluded = build_samples(data)
-    output = ROOT / "results/phase3a_train/clip_mlp"
+    output = ROOT / "results/phase3a_train"
     output.mkdir(parents=True, exist_ok=True)
     write_csv(output / "excluded_images.csv", excluded, ["image_id", "file_name", "reason"])
     train_ids, test_ids = stratified_split(samples)
@@ -243,7 +243,7 @@ def main():
     metrics, records = evaluate_predictions(samples, test_ids, probabilities)
     metrics.update({"classes": list(CLASSES), "train_size": len(train_ids), "source_images": len(data["images"]), "eligible_images": len(samples),
                     "excluded_images": len(excluded), "seed": SEED})
-    checkpoint = ROOT / "ckpt/phase3a_train/clip_mlp/clip_mlp_3class.pt"
+    checkpoint = ROOT / "ckpt/phase3a_train/clip_mlp_3class.pt"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     torch.save({"state_dict": mlp.state_dict(), "classes": list(CLASSES), "backbone": BACKBONE,
                 "feature_dim": features.shape[1], "hidden_dim": HIDDEN_DIM, "normalize_features": True,

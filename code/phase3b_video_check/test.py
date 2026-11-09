@@ -4,45 +4,81 @@ import argparse
 
 
 class YuNet:
-    """동일한 YuNet ONNX 가중치를 PyTorch 장치에서 실행한다."""
+    """같은 패딩 크기의 사람 영역을 묶어 원본 YuNet 가중치로 실행한다."""
     def __init__(self, path, device, threshold=0.5):
         import onnx
+        import torch
+        import warnings
         from onnx2torch import convert
+        from onnx2torch.node_converters.reshape import OnnxReshape
         self.device, self.threshold = device, threshold
         graph = onnx.load(str(path))
         self.names = [output.name for output in graph.graph.output]
-        self.model = convert(graph).to(device).eval().requires_grad_(False)
-        # Reshape/Resize의 고정 크기 상수는 CPU에 유지해 매 호출 장치 동기화를 줄인다.
-        self.model.initializers.cpu()
-        print(f'YuNet: {next(self.model.parameters()).device} (PyTorch)', flush=True)
+        model = convert(graph).eval().requires_grad_(False)
+        # YuNet의 [1, -1, C] reshape를 동적 배치의 동일한 공간축 flatten으로 바꾼다.
+        for node in list(model.graph.nodes):
+            if node.op == 'call_module' and isinstance(model.get_submodule(node.target), OnnxReshape):
+                with model.graph.inserting_before(node):
+                    flat = model.graph.call_method('flatten', (node.args[0], 1, 2))
+                node.replace_all_uses_with(flat)
+                model.graph.erase_node(node)
+        model.graph.eliminate_dead_code()
+        model.recompile()
+        # 정적 Resize 상수와 Python 연산 호출을 실행 그래프에 한 번만 반영한다.
+        with warnings.catch_warnings(), torch.inference_mode():
+            warnings.simplefilter('ignore', torch.jit.TracerWarning)
+            model = torch.jit.trace(model, torch.zeros(1, 3, 64, 64), check_trace=False)
+        self.model = torch.jit.freeze(model.to(device).eval())
+        print(f'YuNet: {device} (PyTorch batch)', flush=True)
 
     def detect(self, image):
+        return self.detect_batch([image])[0]
+
+    def detect_batch(self, images):
+        import cv2
+        import numpy as np
         import torch
-        from torchvision.ops import nms
+        from torchvision.ops import batched_nms
+        if not images:
+            return []
+        groups = {}
+        for i, image in enumerate(images):
+            groups.setdefault(((image.shape[0] + 31) // 32 * 32, (image.shape[1] + 31) // 32 * 32), []).append(i)
+        results = []
         with torch.inference_mode():
-            pixels = torch.as_tensor(image, device=self.device).permute(2, 0, 1).unsqueeze(0).float()
-            pixels = torch.nn.functional.pad(pixels, (0, -image.shape[1] % 32, 0, -image.shape[0] % 32))
-            outputs = dict(zip(self.names, self.model(pixels)))
-            faces = []
-            # OpenCV YuNet의 bbox·landmark·score 복원 규칙:
-            # https://github.com/opencv/opencv/blob/4.x/modules/objdetect/src/face_detect.cpp
-            for stride in (8, 16, 32):
-                y, x = torch.meshgrid(torch.arange(pixels.shape[2] // stride, device=self.device),
-                                      torch.arange(pixels.shape[3] // stride, device=self.device), indexing='ij')
-                grid = torch.stack((x, y), -1).reshape(-1, 2)
-                box = outputs[f'bbox_{stride}'][0]
-                size = box[:, 2:].exp() * stride
-                corner = (box[:, :2] + grid) * stride - size / 2
-                landmarks = (outputs[f'kps_{stride}'][0].reshape(-1, 5, 2) + grid[:, None]) * stride
-                score = (outputs[f'cls_{stride}'][0].clamp(0, 1) * outputs[f'obj_{stride}'][0].clamp(0, 1)).sqrt()
-                faces.append(torch.cat((corner, size, landmarks.flatten(1), score), 1))
-            faces = torch.cat(faces)
-            faces = faces[torch.isfinite(faces).all(1) & (faces[:, -1] >= self.threshold) & (faces[:, 2:4] > 0).all(1)]
-            faces = faces[faces[:, -1].argsort(descending=True)[:5000]]
-            boxes = faces[:, :4].trunc()
+            for (height, width), ids in groups.items():
+                for start in range(0, len(ids), 32):
+                    batch = ids[start:start + 32]
+                    pixels = np.stack([cv2.copyMakeBorder(images[i], 0, height - images[i].shape[0], 0,
+                                       width - images[i].shape[1], cv2.BORDER_CONSTANT) for i in batch])
+                    pixels = torch.as_tensor(pixels, device=self.device).permute(0, 3, 1, 2).float()
+                    outputs = dict(zip(self.names, self.model(pixels)))
+                    faces = []
+                    # https://github.com/opencv/opencv/blob/4.x/modules/objdetect/src/face_detect.cpp
+                    for stride in (8, 16, 32):
+                        y, x = torch.meshgrid(torch.arange(height // stride, device=self.device),
+                                              torch.arange(width // stride, device=self.device), indexing='ij')
+                        grid = torch.stack((x, y), -1).reshape(-1, 2)
+                        box = outputs[f'bbox_{stride}']
+                        size = box[..., 2:].exp() * stride
+                        corner = (box[..., :2] + grid) * stride - size / 2
+                        landmarks = (outputs[f'kps_{stride}'].reshape(len(batch), -1, 5, 2) + grid[:, None]) * stride
+                        score = (outputs[f'cls_{stride}'].clamp(0, 1) * outputs[f'obj_{stride}'].clamp(0, 1)).sqrt()
+                        faces.append(torch.cat((corner, size, landmarks.flatten(2), score), 2))
+                    faces = torch.cat(faces, 1)
+                    order = faces[..., -1].nan_to_num(nan=-1).argsort(descending=True)[:, :5000]
+                    faces = faces.gather(1, order[..., None].expand(-1, -1, 15))
+                    indices = torch.tensor(batch, device=self.device)[:, None, None].expand(-1, faces.shape[1], 1)
+                    results.append(torch.cat((indices, faces), 2).flatten(0, 1))
+            faces = torch.cat(results)
+            faces = faces[torch.isfinite(faces).all(1) & (faces[:, -1] >= self.threshold) & (faces[:, 3:5] > 0).all(1)]
+            boxes = faces[:, 1:5].trunc()
             boxes = torch.cat((boxes[:, :2], boxes[:, :2] + boxes[:, 2:]), 1)
-            faces = faces[nms(boxes, faces[:, -1], 0.3)]
-            return faces.cpu().numpy()
+            if boxes.numel():
+                boxes = boxes - boxes.min()
+            # 정수 bbox는 기존 OpenCV와 같은 기준, NMS는 사람 영역별로 분리한다.
+            faces = faces[batched_nms(boxes, faces[:, -1], faces[:, 0], 0.3)].cpu().numpy()
+        return [faces[faces[:, 0] == i, 1:] for i in range(len(images))]
 
 
 def main(video):
@@ -173,32 +209,32 @@ def main(video):
                 labels, boxes, scores = postprocessor(model(images), sizes[:len(frames)])
                 detections = torch.cat((boxes, labels.unsqueeze(-1), scores.unsqueeze(-1)), -1).cpu().numpy()
                 people = [rows[np.isfinite(rows).all(axis=1) & (rows[:, 4] == PERSON) & (rows[:, 5] >= THRESHOLD)] for rows in detections]
-                faces, crops = [], []
-                # 원본에서 얼굴과 1.8배 crop을 수집한 뒤 배치 추론합니다.
+                faces, crops, people_crops, regions = [], [], [], []
                 for i, (frame, rows) in enumerate(zip(frames, people)):
                     for x1, y1, x2, y2, _, score in rows:
                         x1, x2 = np.clip([np.floor(x1), np.ceil(x2)], 0, width).astype(int)
                         y1, y2 = np.clip([np.floor(y1), np.ceil(y2)], 0, height).astype(int)
                         if x2 - x1 < 16 or y2 - y1 < 16:
                             continue
-                        found = face_detector.detect(np.ascontiguousarray(frame[y1:y2, x1:x2]))
-                        if found is None:
+                        regions.append((i, x1, y1, x2, y2))
+                        people_crops.append(np.ascontiguousarray(frame[y1:y2, x1:x2]))
+                for (i, x1, y1, x2, y2), found in zip(regions, face_detector.detect_batch(people_crops)):
+                    frame = frames[i]
+                    for face in found:
+                        if not np.isfinite(face).all() or face[-1] < FACE_THRESHOLD:
                             continue
-                        for face in found:
-                            if not np.isfinite(face).all() or face[-1] < FACE_THRESHOLD:
-                                continue
-                            fx, fy, fw, fh = map(float, face[:4])
-                            if fw <= 0 or fh <= 0:
-                                continue
-                            fx1, fy1 = max(x1, math.floor(x1 + fx)), max(y1, math.floor(y1 + fy))
-                            fx2, fy2 = min(x2, math.ceil(x1 + fx + fw)), min(y2, math.ceil(y1 + fy + fh))
-                            if fx2 <= fx1 or fy2 <= fy1:
-                                continue
-                            margin = (FACE_EXPAND - 1) / 2
-                            cx1, cy1 = max(0, math.floor(fx1 - (fx2 - fx1) * margin)), max(0, math.floor(fy1 - (fy2 - fy1) * margin))
-                            cx2, cy2 = min(width, math.ceil(fx2 + (fx2 - fx1) * margin)), min(height, math.ceil(fy2 + (fy2 - fy1) * margin))
-                            faces.append((i, (fx1, fy1, fx2, fy2), float(face[-1]), (cx1, cy1, cx2 - cx1, cy2 - cy1)))
-                            crops.append(Image.fromarray(cv2.cvtColor(frame[cy1:cy2, cx1:cx2], cv2.COLOR_BGR2RGB)))
+                        fx, fy, fw, fh = map(float, face[:4])
+                        if fw <= 0 or fh <= 0:
+                            continue
+                        fx1, fy1 = max(x1, math.floor(x1 + fx)), max(y1, math.floor(y1 + fy))
+                        fx2, fy2 = min(x2, math.ceil(x1 + fx + fw)), min(y2, math.ceil(y1 + fy + fh))
+                        if fx2 <= fx1 or fy2 <= fy1:
+                            continue
+                        margin = (FACE_EXPAND - 1) / 2
+                        cx1, cy1 = max(0, math.floor(fx1 - (fx2 - fx1) * margin)), max(0, math.floor(fy1 - (fy2 - fy1) * margin))
+                        cx2, cy2 = min(width, math.ceil(fx2 + (fx2 - fx1) * margin)), min(height, math.ceil(fy2 + (fy2 - fy1) * margin))
+                        faces.append((i, (fx1, fy1, fx2, fy2), float(face[-1]), (cx1, cy1, cx2 - cx1, cy2 - cy1)))
+                        crops.append(Image.fromarray(cv2.cvtColor(frame[cy1:cy2, cx1:cx2], cv2.COLOR_BGR2RGB)))
                 predictions, bounds = [], []
                 for offset in range(0, len(crops), 32):
                     batch = crops[offset:offset + 32]

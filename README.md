@@ -188,7 +188,7 @@ BUTAMI/
 
 **CLI 실행:** `torch_ev` 환경에서 영상 경로 하나를 전달한다.
 
-YuNet도 기존 ONNX 가중치를 PyTorch로 변환해 CUDA에서 실행한다. 변환 패키지는 `pip install onnx==1.17.0 onnx2torch==1.5.15`로 준비한다. 시작 로그의 `YuNet: cuda:0 (PyTorch)`로 실행 장치를 확인한다. 얼굴 좌표·점수의 inf/NaN과 잘못된 크기는 제외한다.
+YuNet도 기존 ONNX 가중치를 PyTorch로 변환해 CUDA에서 실행한다. 변환 패키지는 `pip install onnx==1.17.0 onnx2torch==1.5.15`로 준비한다. 시작 로그의 `YuNet: cuda (PyTorch batch)`로 실행 장치를 확인한다. 같은 패딩 크기의 사람 영역을 묶어 추론하고, 결과를 프레임 배치당 한 번 CPU로 가져온다. 원본 사람 영역 해상도와 검출 기준을 유지한다. MBC 영상의 실제 디코딩 4,977프레임을 모두 저장했으며, 같은 환경에서 추론·저장은 개별 GPU 호출 302.93초에서 배치 처리 241.94초로 줄었다. 얼굴 좌표·점수의 inf/NaN과 잘못된 크기는 제외한다.
 
 `clip_mlp_3class.pt`는 로컬에 준비한다. 나머지 RT-DETRv4-S·YuNet·CLIP·안경 분류/분할 가중치는 로컬 파일을 재사용하고, 누락된 파일은 실행 중 다운로드한다. 첫 다운로드에는 인터넷 연결이 필요하며 RT-DETRv4-S의 Google Drive 다운로드에는 `gdown` 패키지(`pip install gdown`)를 사용한다.
 
